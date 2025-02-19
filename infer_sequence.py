@@ -1,5 +1,5 @@
 """
-Run inference without label masks. Based on inference.py, and requires new click methods 
+Run inference without label masks. Based on inference.py, and requires new click methods
 from updated utils/click_method.py. Check the new click method details for more information.
 
 Author: Karson Chrispens

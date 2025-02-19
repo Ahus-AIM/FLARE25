@@ -1,11 +1,11 @@
 # -*- encoding: utf-8 -*-
-'''
+"""
 @File    :   infer_with_medim.py
 @Time    :   2024/09/08 11:31:02
-@Author  :   Haoyu Wang 
+@Author  :   Haoyu Wang
 @Contact :   small_dark@sina.com
 @Brief   :   Example code for inference with MedIM
-'''
+"""
 
 import medim
 import torch
@@ -29,7 +29,7 @@ def random_sample_next_click(prev_mask, gt_mask):
     prev_mask = prev_mask > 0
     true_masks = gt_mask > 0
 
-    if (not true_masks.any()):
+    if not true_masks.any():
         raise ValueError("Cannot find true value in the ground-truth!")
 
     fn_masks = torch.logical_and(true_masks, torch.logical_not(prev_mask))
@@ -46,24 +46,28 @@ def random_sample_next_click(prev_mask, gt_mask):
         is_positive = False
 
     sampled_point = point.clone().detach().reshape(1, 1, 3)
-    sampled_label = torch.tensor([
-        int(is_positive),
-    ]).reshape(1, 1)
+    sampled_label = torch.tensor(
+        [
+            int(is_positive),
+        ]
+    ).reshape(1, 1)
 
     return sampled_point, sampled_label
 
 
-def sam_model_infer(model,
-                    roi_image,
-                    prompt_generator=random_sample_next_click,
-                    roi_gt=None,
-                    prev_low_res_mask=None):
-    '''
+def sam_model_infer(
+    model,
+    roi_image,
+    prompt_generator=random_sample_next_click,
+    roi_gt=None,
+    prev_low_res_mask=None,
+):
+    """
     Inference for SAM-Med3D, inputs prompt points with its labels (positive/negative for each points)
 
     # roi_image: (torch.Tensor) cropped image, shape [1,1,128,128,128]
     # prompt_points_and_labels: (Tuple(torch.Tensor, torch.Tensor))
-    '''
+    """
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("using device", device)
@@ -73,20 +77,30 @@ def sam_model_infer(model,
         input_tensor = roi_image.to(device)
         image_embeddings = model.image_encoder(input_tensor)
 
-        points_coords, points_labels = torch.zeros(1, 0,
-                                                   3).to(device), torch.zeros(
-                                                       1, 0).to(device)
-        new_points_co, new_points_la = torch.Tensor(
-            [[[64, 64, 64]]]).to(device), torch.Tensor([[1]]).to(torch.int64)
-        if (roi_gt is not None):
-            prev_low_res_mask = prev_low_res_mask if (
-                prev_low_res_mask is not None) else torch.zeros(
-                    1, 1, roi_image.shape[2] // 4, roi_image.shape[3] //
-                    4, roi_image.shape[4] // 4)
+        points_coords, points_labels = torch.zeros(1, 0, 3).to(device), torch.zeros(
+            1, 0
+        ).to(device)
+        new_points_co, new_points_la = torch.Tensor([[[64, 64, 64]]]).to(
+            device
+        ), torch.Tensor([[1]]).to(torch.int64)
+        if roi_gt is not None:
+            prev_low_res_mask = (
+                prev_low_res_mask
+                if (prev_low_res_mask is not None)
+                else torch.zeros(
+                    1,
+                    1,
+                    roi_image.shape[2] // 4,
+                    roi_image.shape[3] // 4,
+                    roi_image.shape[4] // 4,
+                )
+            )
             new_points_co, new_points_la = prompt_generator(
-                torch.zeros_like(roi_image)[0, 0], roi_gt[0, 0])
-            new_points_co, new_points_la = new_points_co.to(
-                device), new_points_la.to(device)
+                torch.zeros_like(roi_image)[0, 0], roi_gt[0, 0]
+            )
+            new_points_co, new_points_la = new_points_co.to(device), new_points_la.to(
+                device
+            )
         points_coords = torch.cat([points_coords, new_points_co], dim=1)
         points_labels = torch.cat([points_labels, new_points_la], dim=1)
 
@@ -104,10 +118,12 @@ def sam_model_infer(model,
             dense_prompt_embeddings=dense_embeddings,  # (1, 384, 8, 8, 8)
         )
 
-        prev_mask = F.interpolate(low_res_masks,
-                                  size=roi_image.shape[-3:],
-                                  mode='trilinear',
-                                  align_corners=False)
+        prev_mask = F.interpolate(
+            low_res_masks,
+            size=roi_image.shape[-3:],
+            mode="trilinear",
+            align_corners=False,
+        )
 
     # convert prob to mask
     medsam_seg_prob = torch.sigmoid(prev_mask)  # (1, 1, 64, 64, 64)
@@ -117,12 +133,14 @@ def sam_model_infer(model,
     return medsam_seg_mask
 
 
-def resample_nii(input_path: str,
-                 output_path: str,
-                 target_spacing: tuple = (1.5, 1.5, 1.5),
-                 n=None,
-                 reference_image=None,
-                 mode="linear"):
+def resample_nii(
+    input_path: str,
+    output_path: str,
+    target_spacing: tuple = (1.5, 1.5, 1.5),
+    n=None,
+    reference_image=None,
+    mode="linear",
+):
     """
     Resample a nii.gz file to a specified spacing using torchio.
 
@@ -136,18 +154,17 @@ def resample_nii(input_path: str,
     resampler = tio.Resample(target=target_spacing, image_interpolation=mode)
     resampled_subject = resampler(subject)
 
-    if (n != None):
+    if n != None:
         image = resampled_subject.img
         tensor_data = image.data
-        if (isinstance(n, int)):
+        if isinstance(n, int):
             n = [n]
         for ni in n:
             tensor_data[tensor_data == ni] = -1
         tensor_data[tensor_data != -1] = 0
         tensor_data[tensor_data != 0] = 1
         save_image = tio.ScalarImage(tensor=tensor_data, affine=image.affine)
-        reference_size = reference_image.shape[
-            1:]  # omitting the channel dimension
+        reference_size = reference_image.shape[1:]  # omitting the channel dimension
         cropper_or_padder = tio.CropOrPad(reference_size)
         save_image = cropper_or_padder(save_image)
     else:
@@ -172,21 +189,24 @@ def read_data_from_nii(img_path, gt_path):
         image=tio.ScalarImage(tensor=sitk_image_arr),
         label=tio.LabelMap(tensor=sitk_label_arr),
     )
-    crop_transform = tio.CropOrPad(mask_name='label',
-                                   target_shape=(128, 128, 128))
-    padding_params, cropping_params = crop_transform.compute_crop_or_pad(
-        subject)
-    if (cropping_params is None): cropping_params = (0, 0, 0, 0, 0, 0)
-    if (padding_params is None): padding_params = (0, 0, 0, 0, 0, 0)
+    crop_transform = tio.CropOrPad(mask_name="label", target_shape=(128, 128, 128))
+    padding_params, cropping_params = crop_transform.compute_crop_or_pad(subject)
+    if cropping_params is None:
+        cropping_params = (0, 0, 0, 0, 0, 0)
+    if padding_params is None:
+        padding_params = (0, 0, 0, 0, 0, 0)
 
-    infer_transform = tio.Compose([
-        crop_transform,
-        tio.ZNormalization(masking_method=lambda x: x > 0),
-    ])
+    infer_transform = tio.Compose(
+        [
+            crop_transform,
+            tio.ZNormalization(masking_method=lambda x: x > 0),
+        ]
+    )
     subject_roi = infer_transform(subject)
 
     img3D_roi, gt3D_roi = subject_roi.image.data.clone().detach().unsqueeze(
-        1), subject_roi.label.data.clone().detach().unsqueeze(1)
+        1
+    ), subject_roi.label.data.clone().detach().unsqueeze(1)
     ori_roi_offset = (
         cropping_params[0],
         cropping_params[0] + 128 - padding_params[0] - padding_params[1],
@@ -228,18 +248,23 @@ def save_numpy_to_nifti(in_arr: np.array, out_path, meta_info):
 def data_preprocess(img_path, gt_path, category_index):
     target_img_path = osp.join(
         osp.dirname(img_path),
-        osp.basename(img_path).replace(".nii.gz", "_resampled.nii.gz"))
+        osp.basename(img_path).replace(".nii.gz", "_resampled.nii.gz"),
+    )
     target_gt_path = osp.join(
         osp.dirname(gt_path),
-        osp.basename(gt_path).replace(".nii.gz", "_resampled.nii.gz"))
+        osp.basename(gt_path).replace(".nii.gz", "_resampled.nii.gz"),
+    )
     resample_nii(img_path, target_img_path)
-    resample_nii(gt_path,
-                 target_gt_path,
-                 n=category_index,
-                 reference_image=tio.ScalarImage(target_img_path),
-                 mode="nearest")
+    resample_nii(
+        gt_path,
+        target_gt_path,
+        n=category_index,
+        reference_image=tio.ScalarImage(target_img_path),
+        mode="nearest",
+    )
     roi_image, roi_label, meta_info = read_data_from_nii(
-        target_img_path, target_gt_path)
+        target_img_path, target_gt_path
+    )
     return roi_image, roi_label, meta_info
 
 
@@ -247,8 +272,9 @@ def data_postprocess(roi_pred, meta_info, output_path, ori_img_path):
     os.makedirs(osp.dirname(output_path), exist_ok=True)
     pred3D_full = np.zeros(meta_info["image_shape"])
     ori_roi = meta_info["ori_roi"]
-    pred3D_full[ori_roi[0]:ori_roi[1], ori_roi[2]:ori_roi[3],
-                ori_roi[4]:ori_roi[5]] = roi_pred
+    pred3D_full[
+        ori_roi[0] : ori_roi[1], ori_roi[2] : ori_roi[3], ori_roi[4] : ori_roi[5]
+    ] = roi_pred
 
     sitk_image = sitk.ReadImage(ori_img_path)
     ori_meta_info = {
@@ -258,33 +284,41 @@ def data_postprocess(roi_pred, meta_info, output_path, ori_img_path):
         "direction": sitk_image.GetDirection(),
         "spacing": sitk_image.GetSpacing(),
     }
-    pred3D_full_ori = F.interpolate(
-        torch.Tensor(pred3D_full)[None][None],
-        size=ori_meta_info["image_shape"],
-        mode='nearest').cpu().numpy().squeeze()
+    pred3D_full_ori = (
+        F.interpolate(
+            torch.Tensor(pred3D_full)[None][None],
+            size=ori_meta_info["image_shape"],
+            mode="nearest",
+        )
+        .cpu()
+        .numpy()
+        .squeeze()
+    )
     save_numpy_to_nifti(pred3D_full_ori, output_path, meta_info)
 
 
 if __name__ == "__main__":
-    ''' 1. read and pre-process your input data '''
+    """1. read and pre-process your input data"""
     img_path = "./test_data/kidney_right/AMOS/imagesVal/amos_0013.nii.gz"
-    gt_path =  "./test_data/kidney_right/AMOS/labelsVal/amos_0013.nii.gz"
+    gt_path = "./test_data/kidney_right/AMOS/labelsVal/amos_0013.nii.gz"
     category_index = 3  # the index of your target category in the gt annotation
     output_dir = "./test_data/kidney_right/AMOS/pred/"
-    roi_image, roi_label, meta_info = data_preprocess(img_path, gt_path, category_index=category_index)
-    
-    ''' 2. prepare the pre-trained model with local path or huggingface url '''
+    roi_image, roi_label, meta_info = data_preprocess(
+        img_path, gt_path, category_index=category_index
+    )
+
+    """ 2. prepare the pre-trained model with local path or huggingface url """
     ckpt_path = "https://huggingface.co/blueyo0/SAM-Med3D/blob/main/sam_med3d_turbo.pth"
     # or you can use the local path like: ckpt_path = "./ckpt/sam_med3d_turbo.pth"
-    model = medim.create_model("SAM-Med3D",
-                               pretrained=True,
-                               checkpoint_path=ckpt_path)
-    
-    ''' 3. infer with the pre-trained SAM-Med3D model '''
+    model = medim.create_model("SAM-Med3D", pretrained=True, checkpoint_path=ckpt_path)
+
+    """ 3. infer with the pre-trained SAM-Med3D model """
     roi_pred = sam_model_infer(model, roi_image, roi_gt=roi_label)
 
-    ''' 4. post-process and save the result '''
-    output_path = osp.join(output_dir, osp.basename(img_path).replace(".nii.gz", "_pred.nii.gz"))
+    """ 4. post-process and save the result """
+    output_path = osp.join(
+        output_dir, osp.basename(img_path).replace(".nii.gz", "_pred.nii.gz")
+    )
     data_postprocess(roi_pred, meta_info, output_path, img_path)
 
     print("result saved to", output_path)

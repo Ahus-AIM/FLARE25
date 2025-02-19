@@ -105,7 +105,7 @@ class Dataset_Union_ALL(Dataset):
             return {
                 "image": subject.image.data.clone().detach(),
                 "label": subject.label.data.clone().detach(),
-                "meta_info": meta_info
+                "meta_info": meta_info,
             }
         else:
             return {
@@ -239,7 +239,7 @@ class Dataset_Union_ALL_Infer(Dataset):
                         path, f"{self.data_type}", f"{base}.nii.gz"
                     )
                     self.image_paths.append(image_path)
-                    
+
         self.image_paths = self.image_paths[self.split_idx :: self.split_num]
 
 
@@ -303,30 +303,34 @@ class Test_Single(Dataset):
 
 if __name__ == "__main__":
     test_dataset = Dataset_Union_ALL_Infer(
-        paths=['./data/inference/heart/hearts/',],
-        data_type='infer',
-        transform=tio.Compose([
-            tio.ToCanonical(),
-            tio.CropOrPad(target_shape=(128,128,128)),
-        ]),
+        paths=[
+            "./data/inference/heart/hearts/",
+        ],
+        data_type="infer",
+        transform=tio.Compose(
+            [
+                tio.ToCanonical(),
+                tio.CropOrPad(target_shape=(128, 128, 128)),
+            ]
+        ),
         pcc=False,
         get_all_meta_info=True,
-        split_idx = 0,
-        split_num = 1,
-        )
+        split_idx=0,
+        split_num=1,
+    )
 
     # test_dataset = Dataset_Union_ALL_Val(
-        # paths=["./data/validation/experimental/heart/hearts"],
-        # mode="Val",
-        # transform=tio.Compose(
-            # [
-                # tio.ToCanonical(),
-                # tio.CropOrPad(target_shape=(128, 128, 128)),
-            # ]
-        # ),
-        # threshold=0,
-        # pcc=False,
-        # get_all_meta_info=True,
+    # paths=["./data/validation/experimental/heart/hearts"],
+    # mode="Val",
+    # transform=tio.Compose(
+    # [
+    # tio.ToCanonical(),
+    # tio.CropOrPad(target_shape=(128, 128, 128)),
+    # ]
+    # ),
+    # threshold=0,
+    # pcc=False,
+    # get_all_meta_info=True,
     # )
 
     test_dataloader = DataLoader(
@@ -334,7 +338,7 @@ if __name__ == "__main__":
     )
 
     print(len(test_dataset))
-    
+
     # for i, j, n in test_dataloader:
     for i, j in test_dataloader:
         print(i.shape)
