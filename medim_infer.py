@@ -7,16 +7,17 @@
 @Brief   :   Example code for inference with MedIM
 """
 
+import os
+import os.path as osp
+
 import medim
-import torch
+import nibabel as nib
 import numpy as np
+import SimpleITK as sitk
+import torch
 import torch.nn.functional as F
 import torchio as tio
-import os.path as osp
-import os
 from torchio.data.io import sitk_to_nib
-import SimpleITK as sitk
-import nibabel as nib
 
 
 def random_sample_next_click(prev_mask, gt_mask):
@@ -78,12 +79,8 @@ def sam_model_infer(
         input_tensor = roi_image.to(device)
         image_embeddings = model.image_encoder(input_tensor)
 
-        points_coords, points_labels = torch.zeros(1, 0, 3).to(device), torch.zeros(
-            1, 0
-        ).to(device)
-        new_points_co, new_points_la = torch.Tensor([[[64, 64, 64]]]).to(
-            device
-        ), torch.Tensor([[1]]).to(torch.int64)
+        points_coords, points_labels = torch.zeros(1, 0, 3).to(device), torch.zeros(1, 0).to(device)
+        new_points_co, new_points_la = torch.Tensor([[[64, 64, 64]]]).to(device), torch.Tensor([[1]]).to(torch.int64)
         if roi_gt is not None:
             prev_low_res_mask = (
                 prev_low_res_mask
@@ -96,12 +93,8 @@ def sam_model_infer(
                     roi_image.shape[4] // 4,
                 )
             )
-            new_points_co, new_points_la = prompt_generator(
-                torch.zeros_like(roi_image)[0, 0], roi_gt[0, 0]
-            )
-            new_points_co, new_points_la = new_points_co.to(device), new_points_la.to(
-                device
-            )
+            new_points_co, new_points_la = prompt_generator(torch.zeros_like(roi_image)[0, 0], roi_gt[0, 0])
+            new_points_co, new_points_la = new_points_co.to(device), new_points_la.to(device)
         points_coords = torch.cat([points_coords, new_points_co], dim=1)
         points_labels = torch.cat([points_labels, new_points_la], dim=1)
 
@@ -153,14 +146,12 @@ def resample_nii(
     # Load the nii.gz file using nibabel
     nib_image = nib.load(input_path)
     nib_tensor = torch.tensor(nib_image.get_fdata()).unsqueeze(0)
-    subject = tio.Subject(
-        img=tio.ScalarImage(tensor=nib_tensor, affine=nib_image.affine)
-    )
+    subject = tio.Subject(img=tio.ScalarImage(tensor=nib_tensor, affine=nib_image.affine))
 
     resampler = tio.Resample(target=target_spacing, image_interpolation=mode)
     resampled_subject = resampler(subject)
 
-    if n != None:
+    if n is not None:
         image = resampled_subject.img
         tensor_data = image.data
         if isinstance(n, int):
@@ -244,7 +235,10 @@ def save_numpy_to_nifti(in_arr: np.array, out_path, meta_info):
     # so we need to squeeze and transpose back to HxWxD
     ori_arr = np.transpose(in_arr.squeeze(), (2, 1, 0))
     out = sitk.GetImageFromArray(ori_arr)
-    sitk_meta_translator = lambda x: [float(i) for i in x]
+
+    def sitk_meta_translator(x):
+        return [float(i) for i in x]
+
     out.SetOrigin(sitk_meta_translator(meta_info["origin"]))
     out.SetDirection(sitk_meta_translator(meta_info["direction"]))
     out.SetSpacing(sitk_meta_translator(meta_info["spacing"]))
@@ -268,9 +262,7 @@ def data_preprocess(img_path, gt_path, category_index):
         reference_image=tio.ScalarImage(target_img_path),
         mode="nearest",
     )
-    roi_image, roi_label, meta_info = read_data_from_nii(
-        target_img_path, target_gt_path
-    )
+    roi_image, roi_label, meta_info = read_data_from_nii(target_img_path, target_gt_path)
     return roi_image, roi_label, meta_info
 
 
@@ -278,9 +270,7 @@ def data_postprocess(roi_pred, meta_info, output_path, ori_img_path):
     os.makedirs(osp.dirname(output_path), exist_ok=True)
     pred3D_full = np.zeros(meta_info["image_shape"])
     ori_roi = meta_info["ori_roi"]
-    pred3D_full[
-        ori_roi[0] : ori_roi[1], ori_roi[2] : ori_roi[3], ori_roi[4] : ori_roi[5]
-    ] = roi_pred
+    pred3D_full[ori_roi[0] : ori_roi[1], ori_roi[2] : ori_roi[3], ori_roi[4] : ori_roi[5]] = roi_pred
 
     sitk_image = sitk.ReadImage(ori_img_path)
     ori_meta_info = {
@@ -309,9 +299,7 @@ if __name__ == "__main__":
     gt_path = "./test_data/kidney_right/AMOS/labelsVal/amos_0013.nii.gz"
     category_index = 3  # the index of your target category in the gt annotation
     output_dir = "./test_data/kidney_right/AMOS/pred/"
-    roi_image, roi_label, meta_info = data_preprocess(
-        img_path, gt_path, category_index=category_index
-    )
+    roi_image, roi_label, meta_info = data_preprocess(img_path, gt_path, category_index=category_index)
 
     """ 2. prepare the pre-trained model with local path or huggingface url """
     ckpt_path = "https://huggingface.co/blueyo0/SAM-Med3D/blob/main/sam_med3d_turbo.pth"
@@ -322,9 +310,7 @@ if __name__ == "__main__":
     roi_pred = sam_model_infer(model, roi_image, roi_gt=roi_label)
 
     """ 4. post-process and save the result """
-    output_path = osp.join(
-        output_dir, osp.basename(img_path).replace(".nii.gz", "_pred.nii.gz")
-    )
+    output_path = osp.join(output_dir, osp.basename(img_path).replace(".nii.gz", "_pred.nii.gz"))
     data_postprocess(roi_pred, meta_info, output_path, img_path)
 
     print("result saved to", output_path)

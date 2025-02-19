@@ -1,5 +1,6 @@
 import importlib
 from collections import defaultdict
+
 import numpy as np
 
 module_name_list = [
@@ -10,7 +11,8 @@ module_name_list = [
 for module_idx, module_name in enumerate(module_name_list):
     try:
         module = importlib.import_module("results." + module_name)
-    except:
+    except Exception as e:
+        print(e)
         raise ValueError("file not found", module_name)
     dice_Ts = module.dice_Ts
     final_results = defaultdict(list)

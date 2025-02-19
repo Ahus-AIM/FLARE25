@@ -7,13 +7,14 @@
 @Brief   :   pre-process nnUNet-style dataset into SAM-Med3D-style
 """
 
-import os.path as osp
-import os
 import json
+import os
+import os.path as osp
 import shutil
+
 import nibabel as nib
-from tqdm import tqdm
 import torchio as tio
+from tqdm import tqdm
 
 
 def resample_nii(
@@ -38,7 +39,7 @@ def resample_nii(
     resampler = tio.Resample(target=target_spacing, image_interpolation=mode)
     resampled_subject = resampler(subject)
 
-    if n != None:
+    if n is not None:
         image = resampled_subject.img
         tensor_data = image.data
         if isinstance(n, int):
@@ -92,12 +93,8 @@ for dataset in dataset_list:
                 resample_nii(img, resample_img)
             img = resample_img
 
-            target_img_path = osp.join(
-                target_img_dir, osp.basename(img).replace("_0000.nii.gz", ".nii.gz")
-            )
-            target_gt_path = osp.join(
-                target_gt_dir, osp.basename(gt).replace("_0000.nii.gz", ".nii.gz")
-            )
+            target_img_path = osp.join(target_img_dir, osp.basename(img).replace("_0000.nii.gz", ".nii.gz"))
+            target_gt_path = osp.join(target_gt_dir, osp.basename(gt).replace("_0000.nii.gz", ".nii.gz"))
 
             gt_img = nib.load(gt)
             spacing = tuple(gt_img.header["pixdim"][1:4])

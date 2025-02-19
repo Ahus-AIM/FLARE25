@@ -4,16 +4,12 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-import torch
 from functools import partial
-from .modeling import (
-    ImageEncoderViT,
-    MaskDecoder,
-    PromptEncoder,
-    Sam,
-    TwoWayTransformer,
-)
+
+import torch
 from torch.nn import functional as F
+
+from .modeling import ImageEncoderViT, MaskDecoder, PromptEncoder, Sam, TwoWayTransformer
 
 
 def build_sam_vit_h(args):
@@ -117,8 +113,8 @@ def _build_sam(
                 sam.load_state_dict(state_dict["model"])
             else:
                 sam.load_state_dict(state_dict)
-        except:
-            print("*******interpolate")
+        except Exception as e:
+            print("*******interpolate", e)
             new_state_dict = load_from(sam, state_dict, image_size, vit_patch_size)
             sam.load_state_dict(new_state_dict)
         print(f"*******load {checkpoint}")
@@ -132,19 +128,14 @@ def load_from(sam, state_dicts, image_size, vit_patch_size):
     new_state_dict = {
         k: v
         for k, v in state_dicts.items()
-        if k in sam_dict.keys()
-        and except_keys[0] not in k
-        and except_keys[1] not in k
-        and except_keys[2] not in k
+        if k in sam_dict.keys() and except_keys[0] not in k and except_keys[1] not in k and except_keys[2] not in k
     }
     pos_embed = new_state_dict["image_encoder.pos_embed"]
     token_size = int(image_size // vit_patch_size)
     if pos_embed.shape[1] != token_size:
         # resize pos embedding, which may sacrifice the performance, but I have no better idea
         pos_embed = pos_embed.permute(0, 3, 1, 2)  # [b, c, h, w]
-        pos_embed = F.interpolate(
-            pos_embed, (token_size, token_size), mode="bilinear", align_corners=False
-        )
+        pos_embed = F.interpolate(pos_embed, (token_size, token_size), mode="bilinear", align_corners=False)
         pos_embed = pos_embed.permute(0, 2, 3, 1)  # [b, h, w, c]
         new_state_dict["image_encoder.pos_embed"] = pos_embed
         rel_pos_keys = [k for k in sam_dict.keys() if "rel_pos" in k]

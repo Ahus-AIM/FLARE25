@@ -4,9 +4,9 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-import torch
-
 from functools import partial
+
+import torch
 
 from .modeling import ImageEncoderViT3D, MaskDecoder3D, PromptEncoder3D, Sam3D
 

@@ -1,5 +1,5 @@
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -37,9 +37,7 @@ def get_next_click3D_torch_no_gt(prev_seg, img3D, threshold=170):
             is_positive = True
         # if no mask is given, random click a negative point
         if point is None:
-            point = torch.Tensor(
-                [np.random.randint(sz) for sz in fn_masks[i].size()]
-            ).to(torch.int64)
+            point = torch.Tensor([np.random.randint(sz) for sz in fn_masks[i].size()]).to(torch.int64)
             is_positive = False
         bp = point[1:].clone().detach().reshape(1, 1, -1).to(pred_masks.device)
         bl = (
@@ -90,9 +88,7 @@ def get_next_click3D_torch_no_gt_naive(prev_seg):
             batch_points.append(bp)
             batch_labels.append(bl)
         else:
-            point = torch.Tensor(
-                [np.random.randint(sz) for sz in pred_masks[i, 0].size()]
-            ).to(torch.int64)
+            point = torch.Tensor([np.random.randint(sz) for sz in pred_masks[i, 0].size()]).to(torch.int64)
             is_positive = pred_masks[i, 0, point[1], point[2], point[3]]
 
             bp = point[1:].clone().detach().reshape(1, 1, 3)
@@ -136,9 +132,7 @@ def get_next_click3D_torch(prev_seg, gt_semantic_seg):
             is_positive = False
         # if no mask is given, random click a negative point
         if point is None:
-            point = torch.Tensor(
-                [np.random.randint(sz) for sz in fn_masks[i].size()]
-            ).to(torch.int64)
+            point = torch.Tensor([np.random.randint(sz) for sz in fn_masks[i].size()]).to(torch.int64)
             is_positive = False
         bp = point[1:].clone().detach().reshape(1, 1, -1).to(pred_masks.device)
         bl = (
@@ -172,23 +166,13 @@ def get_next_click3D_torch_ritm(prev_seg, gt_semantic_seg):
     fn_masks = torch.logical_and(true_masks, torch.logical_not(pred_masks))
     fp_masks = torch.logical_and(torch.logical_not(true_masks), pred_masks)
 
-    fn_mask_single = F.pad(fn_masks, (1, 1, 1, 1, 1, 1), "constant", value=0).to(
-        torch.uint8
-    )[0, 0]
-    fp_mask_single = F.pad(fp_masks, (1, 1, 1, 1, 1, 1), "constant", value=0).to(
-        torch.uint8
-    )[0, 0]
-    fn_mask_dt = torch.tensor(
-        edt.edt(fn_mask_single.cpu().numpy(), black_border=True, parallel=4)
-    )[1:-1, 1:-1, 1:-1]
-    fp_mask_dt = torch.tensor(
-        edt.edt(fp_mask_single.cpu().numpy(), black_border=True, parallel=4)
-    )[1:-1, 1:-1, 1:-1]
+    fn_mask_single = F.pad(fn_masks, (1, 1, 1, 1, 1, 1), "constant", value=0).to(torch.uint8)[0, 0]
+    fp_mask_single = F.pad(fp_masks, (1, 1, 1, 1, 1, 1), "constant", value=0).to(torch.uint8)[0, 0]
+    fn_mask_dt = torch.tensor(edt.edt(fn_mask_single.cpu().numpy(), black_border=True, parallel=4))[1:-1, 1:-1, 1:-1]
+    fp_mask_dt = torch.tensor(edt.edt(fp_mask_single.cpu().numpy(), black_border=True, parallel=4))[1:-1, 1:-1, 1:-1]
     fn_max_dist = torch.max(fn_mask_dt)
     fp_max_dist = torch.max(fp_mask_dt)
-    is_positive = (
-        fn_max_dist > fp_max_dist
-    )  # the biggest area is selected to be interaction point
+    is_positive = fn_max_dist > fp_max_dist  # the biggest area is selected to be interaction point
     dt = fn_mask_dt if is_positive else fp_mask_dt
     to_point_mask = dt > (max(fn_max_dist, fp_max_dist) / 2.0)  # use a erosion area
     to_point_mask = to_point_mask[None, None]
@@ -329,7 +313,5 @@ def show_point(point, label, ax):
 if __name__ == "__main__":
     gt2D = torch.randn((2, 1, 256, 256)).cuda()
     prev_masks = torch.zeros_like(gt2D).to(gt2D.device)
-    batch_points, batch_labels = get_next_click3D_torch(
-        prev_masks.to(gt2D.device), gt2D
-    )
+    batch_points, batch_labels = get_next_click3D_torch(prev_masks.to(gt2D.device), gt2D)
     print(batch_points)

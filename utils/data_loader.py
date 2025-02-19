@@ -1,13 +1,12 @@
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
-import torchio as tio
-from torchio.data.io import sitk_to_nib
-import torch
-import numpy as np
 import os
-import torch
+
+import numpy as np
 import SimpleITK as sitk
+import torch
+import torchio as tio
 from prefetch_generator import BackgroundGenerator
+from torch.utils.data import DataLoader, Dataset
+from torchio.data.io import sitk_to_nib
 
 
 class Dataset_Union_ALL(Dataset):
@@ -64,8 +63,8 @@ class Dataset_Union_ALL(Dataset):
         if self.transform:
             try:
                 subject = self.transform(subject)
-            except:
-                print(self.image_paths[index])
+            except Exception as e:
+                print(e, self.image_paths[index])
 
         if self.pcc:
             print("using pcc setting")
@@ -76,9 +75,7 @@ class Dataset_Union_ALL(Dataset):
                 # print(random_index)
                 crop_mask = torch.zeros_like(subject.label.data)
                 # print(crop_mask.shape)
-                crop_mask[random_index[0]][random_index[1]][random_index[2]][
-                    random_index[3]
-                ] = 1
+                crop_mask[random_index[0]][random_index[1]][random_index[2]][random_index[3]] = 1
                 subject.add_image(
                     tio.LabelMap(tensor=crop_mask, affine=subject.label.affine),
                     image_name="crop_mask",
@@ -124,9 +121,7 @@ class Dataset_Union_ALL(Dataset):
             if os.path.exists(d):
                 for name in os.listdir(d):
                     base = os.path.basename(name).split(".nii.gz")[0]
-                    label_path = os.path.join(
-                        path, f"labels{self.data_type}", f"{base}.nii.gz"
-                    )
+                    label_path = os.path.join(path, f"labels{self.data_type}", f"{base}.nii.gz")
                     self.image_paths.append(label_path.replace("labels", "images"))
                     self.label_paths.append(label_path)
 
@@ -193,8 +188,8 @@ class Dataset_Union_ALL_Infer(Dataset):
         if self.transform:
             try:
                 subject = self.transform(subject)
-            except:
-                print("Could not transform", self.image_paths[index])
+            except Exception as e:
+                print("Could not transform", self.image_paths[index], e)
 
         if self.pcc:
             print("using pcc setting")
@@ -203,9 +198,7 @@ class Dataset_Union_ALL_Infer(Dataset):
             if len(random_index) >= 1:
                 random_index = random_index[np.random.randint(0, len(random_index))]
                 crop_mask = torch.zeros_like(subject.label.data)
-                crop_mask[random_index[0]][random_index[1]][random_index[2]][
-                    random_index[3]
-                ] = 1
+                crop_mask[random_index[0]][random_index[1]][random_index[2]][random_index[3]] = 1
                 subject.add_image(
                     tio.LabelMap(tensor=crop_mask, affine=subject.label.affine),
                     image_name="crop_mask",
@@ -235,9 +228,7 @@ class Dataset_Union_ALL_Infer(Dataset):
             if os.path.exists(d):
                 for name in os.listdir(d):
                     base = os.path.basename(name).split(".nii.gz")[0]
-                    image_path = os.path.join(
-                        path, f"{self.data_type}", f"{base}.nii.gz"
-                    )
+                    image_path = os.path.join(path, f"{self.data_type}", f"{base}.nii.gz")
                     self.image_paths.append(image_path)
 
         self.image_paths = self.image_paths[self.split_idx :: self.split_num]
@@ -281,8 +272,8 @@ class Test_Single(Dataset):
         if self.transform:
             try:
                 subject = self.transform(subject)
-            except:
-                print(self.image_paths[index])
+            except Exception as e:
+                print(self.image_paths[index], e)
 
         if subject.label.data.sum() <= self.threshold:
             return self.__getitem__(np.random.randint(self.__len__()))
@@ -333,9 +324,7 @@ if __name__ == "__main__":
     # get_all_meta_info=True,
     # )
 
-    test_dataloader = DataLoader(
-        dataset=test_dataset, sampler=None, batch_size=1, shuffle=True
-    )
+    test_dataloader = DataLoader(dataset=test_dataset, sampler=None, batch_size=1, shuffle=True)
 
     print(len(test_dataset))
 

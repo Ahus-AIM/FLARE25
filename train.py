@@ -1,30 +1,31 @@
 # set up environment
-import numpy as np
-import random
 import datetime
 import logging
-import matplotlib.pyplot as plt
 import os
+import random
+
+import matplotlib.pyplot as plt
+import numpy as np
 
 join = os.path.join
-from tqdm import tqdm
-from torch.backends import cudnn
+import argparse
+from contextlib import nullcontext
+
 import torch
 import torch.distributed as dist
+import torch.multiprocessing as mp
 import torch.nn.functional as F
 import torchio as tio
-from torch.utils.data.distributed import DistributedSampler
-from segment_anything.build_sam3D import sam_model_registry3D
-import argparse
-from torch.cuda import amp
-import torch.multiprocessing as mp
-from torch.nn.parallel import DistributedDataParallel as DDP
 from monai.losses import DiceCELoss
-from contextlib import nullcontext
+from torch.backends import cudnn
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+from tqdm import tqdm
+
+from segment_anything.build_sam3D import sam_model_registry3D
 from utils.click_method import get_next_click3D_torch_2
 from utils.data_loader import Dataset_Union_ALL, Union_Dataloader
 from utils.data_paths import img_datas
-
 
 # %% set up parser
 parser = argparse.ArgumentParser()
@@ -127,9 +128,7 @@ class BaseTrainer:
         self.set_optimizer()
         self.set_lr_scheduler()
         if args.resume:
-            self.init_checkpoint(
-                join(self.args.work_dir, self.args.task_name, "sam_model_latest.pth")
-            )
+            self.init_checkpoint(join(self.args.work_dir, self.args.task_name, "sam_model_latest.pth"))
         else:
             self.init_checkpoint(self.args.checkpoint)
 
@@ -146,9 +145,7 @@ class BaseTrainer:
 
         self.optimizer = torch.optim.AdamW(
             [
-                {
-                    "params": sam_model.image_encoder.parameters()
-                },  # , 'lr': self.args.lr * 0.1},
+                {"params": sam_model.image_encoder.parameters()},  # , 'lr': self.args.lr * 0.1},
                 {
                     "params": sam_model.prompt_encoder.parameters(),
                     "lr": self.args.lr * 0.1,
@@ -169,13 +166,9 @@ class BaseTrainer:
                 self.optimizer, self.args.step_size, self.args.gamma
             )
         elif self.args.lr_scheduler == "steplr":
-            self.lr_scheduler = torch.optim.lr_scheduler.StepLR(
-                self.optimizer, self.args.step_size[0], self.args.gamma
-            )
+            self.lr_scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, self.args.step_size[0], self.args.gamma)
         elif self.args.lr_scheduler == "coswarm":
-            self.lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                self.optimizer
-            )
+            self.lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimizer)
         else:
             self.lr_scheduler = torch.optim.lr_scheduler.LinearLR(self.optimizer, 0.1)
 
@@ -191,13 +184,9 @@ class BaseTrainer:
         if last_ckpt:
             if self.args.allow_partial_weight:
                 if self.args.multi_gpu:
-                    self.model.module.load_state_dict(
-                        last_ckpt["model_state_dict"], strict=False
-                    )
+                    self.model.module.load_state_dict(last_ckpt["model_state_dict"], strict=False)
                 else:
-                    self.model.load_state_dict(
-                        last_ckpt["model_state_dict"], strict=False
-                    )
+                    self.model.load_state_dict(last_ckpt["model_state_dict"], strict=False)
             else:
                 if self.args.multi_gpu:
                     self.model.module.load_state_dict(last_ckpt["model_state_dict"])
@@ -235,9 +224,7 @@ class BaseTrainer:
             join(MODEL_SAVE_PATH, f"sam_model_{describe}.pth"),
         )
 
-    def batch_forward(
-        self, sam_model, image_embedding, gt3D, low_res_masks, points=None
-    ):
+    def batch_forward(self, sam_model, image_embedding, gt3D, low_res_masks, points=None):
 
         sparse_embeddings, dense_embeddings = sam_model.prompt_encoder(
             points=points,
@@ -251,15 +238,11 @@ class BaseTrainer:
             dense_prompt_embeddings=dense_embeddings,  # (B, 256, 64, 64)
             multimask_output=False,
         )
-        prev_masks = F.interpolate(
-            low_res_masks, size=gt3D.shape[-3:], mode="trilinear", align_corners=False
-        )
+        prev_masks = F.interpolate(low_res_masks, size=gt3D.shape[-3:], mode="trilinear", align_corners=False)
         return low_res_masks, prev_masks
 
     def get_points(self, prev_masks, gt3D):
-        batch_points, batch_labels = click_methods[self.args.click_type](
-            prev_masks, gt3D
-        )
+        batch_points, batch_labels = click_methods[self.args.click_type](prev_masks, gt3D)
 
         points_co = torch.cat(batch_points, dim=0).to(device)
         points_la = torch.cat(batch_labels, dim=0).to(device)
@@ -350,9 +333,7 @@ class BaseTrainer:
                 print(f"Error processing batch at step {step}: {e}")
             # import pdb; pdb.set_trace()
             my_context = (
-                self.model.no_sync
-                if self.args.rank != -1 and step % self.args.accumulation_steps != 0
-                else nullcontext
+                self.model.no_sync if self.args.rank != -1 and step % self.args.accumulation_steps != 0 else nullcontext
             )
 
             with my_context():
@@ -370,9 +351,7 @@ class BaseTrainer:
 
                     pred_list = []
 
-                    prev_masks, loss = self.interaction(
-                        sam_model, image_embedding, gt3D, num_clicks=11
-                    )
+                    prev_masks, loss = self.interaction(sam_model, image_embedding, gt3D, num_clicks=11)
 
                 epoch_loss += loss.item()
                 epoch_dice += self.get_dice_score(prev_masks, gt3D)
@@ -395,9 +374,7 @@ class BaseTrainer:
 
             if not self.args.multi_gpu or (self.args.multi_gpu and self.args.rank == 0):
                 if step % self.args.accumulation_steps == 0 and step != 0:
-                    print(
-                        f"Epoch: {epoch}, Step: {step}, Loss: {print_loss}, Dice: {print_dice}"
-                    )
+                    print(f"Epoch: {epoch}, Step: {step}, Loss: {print_loss}, Dice: {print_dice}")
                     if print_dice > self.step_best_dice:
                         self.step_best_dice = print_dice
                         if print_dice > 0.9:
@@ -434,9 +411,7 @@ class BaseTrainer:
                 dist.barrier()
                 self.dataloaders.sampler.set_epoch(epoch)
             num_clicks = np.random.randint(1, 21)
-            epoch_loss, epoch_iou, epoch_dice, pred_list = self.train_epoch(
-                epoch, num_clicks
-            )
+            epoch_loss, epoch_iou, epoch_dice, pred_list = self.train_epoch(epoch, num_clicks)
 
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
@@ -448,9 +423,7 @@ class BaseTrainer:
                 self.dices.append(epoch_dice)
                 print(f"EPOCH: {epoch}, Loss: {epoch_loss}")
                 print(f"EPOCH: {epoch}, Dice: {epoch_dice}")
-                logger.info(
-                    f"Epoch\t {epoch}\t : loss: {epoch_loss}, dice: {epoch_dice}"
-                )
+                logger.info(f"Epoch\t {epoch}\t : loss: {epoch_loss}, dice: {epoch_dice}")
 
                 if self.args.multi_gpu:
                     state_dict = self.model.module.state_dict()
@@ -472,21 +445,15 @@ class BaseTrainer:
 
                 self.plot_result(self.losses, "Dice + Cross Entropy Loss", "Loss")
                 self.plot_result(self.dices, "Dice", "Dice")
-        logger.info(
-            "====================================================================="
-        )
+        logger.info("=====================================================================")
         logger.info(f"Best loss: {self.best_loss}")
         logger.info(f"Best dice: {self.best_dice}")
         logger.info(f"Total loss: {self.losses}")
         logger.info(f"Total dice: {self.dices}")
-        logger.info(
-            "====================================================================="
-        )
+        logger.info("=====================================================================")
         logger.info(f"args : {self.args}")
         logger.info(f"Used datasets : {img_datas}")
-        logger.info(
-            "====================================================================="
-        )
+        logger.info("=====================================================================")
 
 
 def init_seeds(seed=0, cuda_deterministic=True):

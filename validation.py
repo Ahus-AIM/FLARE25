@@ -1,32 +1,30 @@
 import os
 
 join = os.path.join
-import numpy as np
-from glob import glob
-import torch
-from segment_anything.build_sam3D import sam_model_registry3D
-from segment_anything.utils.transforms3D import ResizeLongestSide3D
-from segment_anything import sam_model_registry
-from tqdm import tqdm
 import argparse
-import SimpleITK as sitk
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
-import SimpleITK as sitk
-import torchio as tio
-import numpy as np
-from collections import OrderedDict, defaultdict
 import json
 import pickle
-from utils.click_method import get_next_click3D_torch_ritm, get_next_click3D_torch_2
+from collections import OrderedDict, defaultdict
+from glob import glob
+
+import numpy as np
+import SimpleITK as sitk
+import torch
+import torch.nn.functional as F
+import torchio as tio
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+from segment_anything import sam_model_registry
+from segment_anything.build_sam3D import sam_model_registry3D
+from segment_anything.utils.transforms3D import ResizeLongestSide3D
+from utils.click_method import get_next_click3D_torch_2, get_next_click3D_torch_ritm
 from utils.data_loader import Dataset_Union_ALL_Val
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-tdp", "--test_data_path", type=str, default="./data/validation")
 parser.add_argument("-vp", "--vis_path", type=str, default="./visualization")
-parser.add_argument(
-    "-cp", "--checkpoint_path", type=str, default="./ckpt/sam_med3d.pth"
-)
+parser.add_argument("-cp", "--checkpoint_path", type=str, default="./ckpt/sam_med3d.pth")
 parser.add_argument("--save_name", type=str, default="union_out_dice.py")
 parser.add_argument("--skip_existing_pred", action="store_true", default=False)
 
@@ -95,9 +93,7 @@ def postprocess_masks(low_res_masks, image_size, original_size):
         masks = masks[..., top : ori_h + top, left : ori_w + left]
         pad = (top, left)
     else:
-        masks = F.interpolate(
-            masks, original_size, mode="bilinear", align_corners=False
-        )
+        masks = F.interpolate(masks, original_size, mode="bilinear", align_corners=False)
         pad = None
     return masks, pad
 
@@ -169,9 +165,7 @@ def random_point_sampling(mask, get_point=1):
             index = np.random.randint(bg_size)
             fg_coord = bg_coords[index]
             label = 0
-        return torch.as_tensor([fg_coord.tolist()], dtype=torch.float), torch.as_tensor(
-            [label], dtype=torch.int
-        )
+        return torch.as_tensor([fg_coord.tolist()], dtype=torch.float), torch.as_tensor([label], dtype=torch.int)
     else:
         num_fg = get_point // 2
         num_bg = get_point - num_fg
@@ -182,9 +176,9 @@ def random_point_sampling(mask, get_point=1):
         coords = np.concatenate([fg_coords, bg_coords], axis=0)
         labels = np.concatenate([np.ones(num_fg), np.zeros(num_bg)]).astype(int)
         indices = np.random.permutation(get_point)
-        coords, labels = torch.as_tensor(
-            coords[indices], dtype=torch.float
-        ), torch.as_tensor(labels[indices], dtype=torch.int)
+        coords, labels = torch.as_tensor(coords[indices], dtype=torch.float), torch.as_tensor(
+            labels[indices], dtype=torch.int
+        )
         return coords, labels
 
 
@@ -204,9 +198,7 @@ def finetune_model_predict2D(
 
     slice_mask_list = defaultdict(list)
 
-    img3D = torch.repeat_interleave(
-        img3D, repeats=3, dim=1
-    )  # 1 channel -> 3 channel (align to RGB)
+    img3D = torch.repeat_interleave(img3D, repeats=3, dim=1)  # 1 channel -> 3 channel (align to RGB)
 
     click_points = []
     click_labels = []
@@ -219,12 +211,8 @@ def finetune_model_predict2D(
                 slice_mask_list[iter].append(empty_result)
             continue
 
-        img2D = F.interpolate(
-            img2D, (target_size, target_size), mode="bilinear", align_corners=False
-        )
-        gt2D = F.interpolate(
-            gt2D.float(), (target_size, target_size), mode="nearest"
-        ).int()
+        img2D = F.interpolate(img2D, (target_size, target_size), mode="bilinear", align_corners=False)
+        gt2D = F.interpolate(gt2D.float(), (target_size, target_size), mode="nearest").int()
 
         img2D, gt2D = img2D.to(device), gt2D.to(device)
         img2D = (img2D - img2D.mean()) / img2D.std()
@@ -232,14 +220,12 @@ def finetune_model_predict2D(
         with torch.no_grad():
             image_embeddings = sam_model_tune.image_encoder(img2D.float())
 
-        points_co, points_la = torch.zeros(1, 0, 2).to(device), torch.zeros(1, 0).to(
-            device
-        )
+        points_co, points_la = torch.zeros(1, 0, 2).to(device), torch.zeros(1, 0).to(device)
         low_res_masks = None
         gt_semantic_seg = gt2D[0, 0].to(device)
         true_masks = gt_semantic_seg > 0
         for iter in range(num_clicks):
-            if low_res_masks == None:
+            if low_res_masks is None:
                 pred_masks = torch.zeros_like(true_masks).to(device)
             else:
                 pred_masks = (prev_masks[0, 0] > 0.0).to(device)
@@ -252,9 +238,7 @@ def finetune_model_predict2D(
                 if (true_masks[new_points_co[0, 1].int(), new_points_co[0, 0].int()])
                 else torch.Tensor([0]).to(torch.int64)
             )
-            new_points_co, new_points_la = new_points_co[None].to(
-                device
-            ), new_points_la[None].to(device)
+            new_points_co, new_points_la = new_points_co[None].to(device), new_points_la[None].to(device)
             points_co = torch.cat([points_co, new_points_co], dim=1)
             points_la = torch.cat([points_la, new_points_la], dim=1)
             prev_masks, low_res_masks, iou_predictions = sam_decoder_inference(
@@ -269,12 +253,8 @@ def finetune_model_predict2D(
             click_points.append(new_points_co)
             click_labels.append(new_points_la)
 
-            slice_mask, _ = postprocess_masks(
-                low_res_masks, target_size, (gt3D.size(2), gt3D.size(3))
-            )
-            slice_mask_list[iter].append(
-                slice_mask[..., None]
-            )  # append (B, C, H, W, 1)
+            slice_mask, _ = postprocess_masks(low_res_masks, target_size, (gt3D.size(2), gt3D.size(3)))
+            slice_mask_list[iter].append(slice_mask[..., None])  # append (B, C, H, W, 1)
 
     for iter in range(num_clicks):
         medsam_seg = torch.cat(slice_mask_list[iter], dim=-1).cpu().numpy().squeeze()
@@ -282,14 +262,10 @@ def finetune_model_predict2D(
         medsam_seg = medsam_seg.astype(np.uint8)
 
         pred_list.append(medsam_seg)
-        iou_list.append(
-            round(compute_iou(medsam_seg, gt3D[0][0].detach().cpu().numpy()), 4)
-        )
+        iou_list.append(round(compute_iou(medsam_seg, gt3D[0][0].detach().cpu().numpy()), 4))
         dice_list.append(
             round(
-                compute_dice(
-                    gt3D[0][0].detach().cpu().numpy().astype(np.uint8), medsam_seg
-                ),
+                compute_dice(gt3D[0][0].detach().cpu().numpy().astype(np.uint8), medsam_seg),
                 4,
             )
         )
@@ -324,16 +300,12 @@ def finetune_model_predict3D(
     )
 
     with torch.no_grad():
-        image_embedding = sam_model_tune.image_encoder(
-            img3D.to(device)
-        )  # (1, 384, 16, 16, 16)
+        image_embedding = sam_model_tune.image_encoder(img3D.to(device))  # (1, 384, 16, 16, 16)
     for num_click in range(num_clicks):
         with torch.no_grad():
             if num_click > 1:
                 click_method = "random"
-            batch_points, batch_labels = click_methods[click_method](
-                prev_masks.to(device), gt3D.to(device)
-            )
+            batch_points, batch_labels = click_methods[click_method](prev_masks.to(device), gt3D.to(device))
 
             points_co = torch.cat(batch_points, dim=0).to(device)
             points_la = torch.cat(batch_labels, dim=0).to(device)
@@ -369,14 +341,10 @@ def finetune_model_predict3D(
             medsam_seg = (medsam_seg_prob > 0.5).astype(np.uint8)
             pred_list.append(medsam_seg)
 
-            iou_list.append(
-                round(compute_iou(medsam_seg, gt3D[0][0].detach().cpu().numpy()), 4)
-            )
+            iou_list.append(round(compute_iou(medsam_seg, gt3D[0][0].detach().cpu().numpy()), 4))
             dice_list.append(
                 round(
-                    compute_dice(
-                        gt3D[0][0].detach().cpu().numpy().astype(np.uint8), medsam_seg
-                    ),
+                    compute_dice(gt3D[0][0].detach().cpu().numpy().astype(np.uint8), medsam_seg),
                     4,
                 )
             )
@@ -408,9 +376,7 @@ if __name__ == "__main__":
         pcc=False,
     )
 
-    test_dataloader = DataLoader(
-        dataset=test_dataset, sampler=None, batch_size=1, shuffle=True
-    )
+    test_dataloader = DataLoader(dataset=test_dataset, sampler=None, batch_size=1, shuffle=True)
 
     checkpoint_path = args.checkpoint_path
 
@@ -418,9 +384,7 @@ if __name__ == "__main__":
     print("device:", device)
 
     if args.dim == 3:
-        sam_model_tune = sam_model_registry3D[args.model_type](checkpoint=None).to(
-            device
-        )
+        sam_model_tune = sam_model_registry3D[args.model_type](checkpoint=None).to(device)
         if checkpoint_path is not None:
             model_dict = torch.load(checkpoint_path, map_location=device)
             state_dict = model_dict["model_state_dict"]
@@ -442,32 +406,22 @@ if __name__ == "__main__":
         sz = image3D.size()
         if sz[2] < args.crop_size or sz[3] < args.crop_size or sz[4] < args.crop_size:
             print("[ERROR] wrong size", sz, "for", img_name)
-        modality = os.path.basename(
-            os.path.dirname(os.path.dirname(os.path.dirname(img_name[0])))
-        )
+        modality = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(img_name[0]))))
         dataset = os.path.basename(os.path.dirname(os.path.dirname(img_name[0])))
-        vis_root = os.path.join(
-            os.path.dirname(__file__), args.vis_path, modality, dataset
-        )
+        vis_root = os.path.join(os.path.dirname(__file__), args.vis_path, modality, dataset)
         pred_path = os.path.join(
             vis_root,
-            os.path.basename(img_name[0]).replace(
-                ".nii.gz", f"_pred{args.num_clicks-1}.nii.gz"
-            ),
+            os.path.basename(img_name[0]).replace(".nii.gz", f"_pred{args.num_clicks-1}.nii.gz"),
         )
         if args.skip_existing_pred and os.path.exists(pred_path):
             iou_list, dice_list = [], []
             for iter in range(args.num_clicks):
                 curr_pred_path = os.path.join(
                     vis_root,
-                    os.path.basename(img_name[0]).replace(
-                        ".nii.gz", f"_pred{iter}.nii.gz"
-                    ),
+                    os.path.basename(img_name[0]).replace(".nii.gz", f"_pred{iter}.nii.gz"),
                 )
                 medsam_seg = sitk.GetArrayFromImage(sitk.ReadImage(curr_pred_path))
-                iou_list.append(
-                    round(compute_iou(medsam_seg, gt3D[0][0].detach().cpu().numpy()), 4)
-                )
+                iou_list.append(round(compute_iou(medsam_seg, gt3D[0][0].detach().cpu().numpy()), 4))
                 dice_list.append(
                     round(
                         compute_dice(
@@ -480,29 +434,25 @@ if __name__ == "__main__":
         else:
             norm_transform = tio.ZNormalization(masking_method=lambda x: x > 0)
             if args.dim == 3:
-                seg_mask_list, points, labels, iou_list, dice_list = (
-                    finetune_model_predict3D(
-                        image3D,
-                        gt3D,
-                        sam_model_tune,
-                        device=device,
-                        click_method=args.point_method,
-                        num_clicks=args.num_clicks,
-                        prev_masks=None,
-                    )
+                seg_mask_list, points, labels, iou_list, dice_list = finetune_model_predict3D(
+                    image3D,
+                    gt3D,
+                    sam_model_tune,
+                    device=device,
+                    click_method=args.point_method,
+                    num_clicks=args.num_clicks,
+                    prev_masks=None,
                 )
             elif args.dim == 2:
-                seg_mask_list, points, labels, iou_list, dice_list = (
-                    finetune_model_predict2D(
-                        image3D,
-                        gt3D,
-                        sam_model_tune,
-                        device=device,
-                        target_size=args.image_size,
-                        click_method=args.point_method,
-                        num_clicks=args.num_clicks,
-                        prev_masks=None,
-                    )
+                seg_mask_list, points, labels, iou_list, dice_list = finetune_model_predict2D(
+                    image3D,
+                    gt3D,
+                    sam_model_tune,
+                    device=device,
+                    target_size=args.image_size,
+                    click_method=args.point_method,
+                    num_clicks=args.num_clicks,
+                    prev_masks=None,
                 )
             os.makedirs(vis_root, exist_ok=True)
             points = [p.cpu().numpy() for p in points]
@@ -515,9 +465,7 @@ if __name__ == "__main__":
                     os.path.basename(img_name[0]).replace(".nii.gz", "_pred.nii.gz"),
                 ),
             )
-            pt_path = os.path.join(
-                vis_root, os.path.basename(img_name[0]).replace(".nii.gz", "_pt.pkl")
-            )
+            pt_path = os.path.join(vis_root, os.path.basename(img_name[0]).replace(".nii.gz", "_pt.pkl"))
             pickle.dump(pt_info, open(pt_path, "wb"))
             for idx, pred3D in enumerate(seg_mask_list):
                 out = sitk.GetImageFromArray(pred3D)
@@ -525,9 +473,7 @@ if __name__ == "__main__":
                     out,
                     os.path.join(
                         vis_root,
-                        os.path.basename(img_name[0]).replace(
-                            ".nii.gz", f"_pred{idx}.nii.gz"
-                        ),
+                        os.path.basename(img_name[0]).replace(".nii.gz", f"_pred{idx}.nii.gz"),
                     ),
                 )
 
@@ -553,9 +499,7 @@ if __name__ == "__main__":
         final_dice_dict[organ][k] = v
 
     if args.split_num > 1:
-        args.save_name = args.save_name.replace(
-            ".py", f"_s{args.split_num}i{args.split_idx}.py"
-        )
+        args.save_name = args.save_name.replace(".py", f"_s{args.split_num}i{args.split_idx}.py")
 
     print("Save to", args.save_name)
     with open(args.save_name, "w") as f:
