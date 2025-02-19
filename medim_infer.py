@@ -16,6 +16,7 @@ import os.path as osp
 import os
 from torchio.data.io import sitk_to_nib
 import SimpleITK as sitk
+import nibabel as nib
 
 
 def random_sample_next_click(prev_mask, gt_mask):
@@ -149,8 +150,13 @@ def resample_nii(
     - output_path: Path to save the resampled .nii.gz file.
     - target_spacing: Desired spacing for resampling. Default is (1.5, 1.5, 1.5).
     """
-    # Load the nii.gz file using torchio
-    subject = tio.Subject(img=tio.ScalarImage(input_path))
+    # Load the nii.gz file using nibabel
+    nib_image = nib.load(input_path)
+    nib_tensor = torch.tensor(nib_image.get_fdata()).unsqueeze(0)
+    subject = tio.Subject(
+        img=tio.ScalarImage(tensor=nib_tensor, affine=nib_image.affine)
+    )
+
     resampler = tio.Resample(target=target_spacing, image_interpolation=mode)
     resampled_subject = resampler(subject)
 

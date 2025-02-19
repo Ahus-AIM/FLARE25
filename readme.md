@@ -32,8 +32,8 @@ First, set up your environment with the following commands:
 ```
 conda create --name sammed3d python=3.10 
 conda activate sammed3d
-pip install light-the-torch && ltt install torch
-pip install torchio opencv-python-headless matplotlib prefetch_generator monai edt medim
+pip install light-the-torch && ltt install torch torchvision
+pip install torchio opencv-python-headless matplotlib prefetch_generator monai edt medim nibabel
 ```
 Then, use [`medim_infer.py`](https://github.com/uni-medical/SAM-Med3D/blob/main/medim_infer.py) to test the inference:
 ```
