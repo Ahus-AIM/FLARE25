@@ -292,6 +292,60 @@ def get_next_click3D_torch_with_dice(prev_seg, gt_semantic_seg):
     return batch_points, batch_labels, (sum(dice_list) / len(dice_list)).item()
 
 
+def get_clicks_for_class_error(prev_seg, gt_semantic_seg):
+    """
+    Get clicks using the same method as in challenge evaluation.
+    """
+    batch_points = []
+    batch_labels = []
+
+    mask_threshold = 0.5
+    pred_masks = prev_seg > mask_threshold
+    true_masks = gt_semantic_seg > 0
+
+    to_points_mask = pred_masks != true_masks
+
+    # loop over batch items
+    for i in range(gt_semantic_seg.shape[0]):
+
+        error_mask = to_points_mask[i, 0]
+
+        if error_mask.sum() > 0:
+            if torch.cuda.is_available():
+                import cupy as cp
+                from cucim.core.operations import morphology
+
+                error_mask_cp = cp.array(error_mask)
+                edt_cp = morphology.distance_transform_edt(error_mask_cp)
+                center = cp.unravel_index(cp.argmax(edt_cp), edt_cp.shape)
+                center = np.array([int(center[0]), int(center[1]), int(center[2])])
+            else:  # CPU available only
+                from scipy.ndimage import distance_transform_edt
+
+                edt = distance_transform_edt(error_mask)
+                # Find the center in the cropped mask
+                center = np.unravel_index(np.argmax(edt), edt.shape)
+
+            center = tuple(center)
+
+            # Place the click: background click for oversegmentation, foreground for undersegmentation
+            if true_masks[i, 0][center] == 0:  # oversegmentation -> background click
+                assert pred_masks[i, 0][center] == 1
+                center = torch.tensor(center).unsqueeze(0).unsqueeze(0)
+                batch_points.append(center)
+                batch_labels.append(torch.tensor([0]).unsqueeze(0))  # background label
+            else:  # undersegmentation -> foreground click
+                assert pred_masks[i, 0][center] == 0
+                center = torch.tensor(center).unsqueeze(0).unsqueeze(0)
+                batch_points.append(center)
+                batch_labels.append(torch.tensor([1]).unsqueeze(0))  # foreground label
+
+        else:
+            print("No error connected components found. Prediction is perfect! No clicks were added.")
+
+    return batch_points, batch_labels
+
+
 def show_mask(mask, ax, random_color=False):
     if random_color:
         color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
