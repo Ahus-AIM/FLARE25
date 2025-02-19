@@ -11,6 +11,7 @@ join = os.path.join
 import argparse
 from contextlib import nullcontext
 
+import nibabel as nib
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -23,9 +24,10 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
 from segment_anything.build_sam3D import sam_model_registry3D
-from utils.click_method import get_next_click3D_torch_2
+from utils.click_method import get_clicks_for_class_error, get_next_click3D_torch_2
 from utils.data_loader import Dataset_Union_ALL, Union_Dataloader
 from utils.data_paths import img_datas
+from utils.npz_data_loader import NPZDataset
 
 # %% set up parser
 parser = argparse.ArgumentParser()
@@ -36,6 +38,10 @@ parser.add_argument("--model_type", type=str, default="vit_b_ori")
 parser.add_argument("--checkpoint", type=str, default="ckpt/sam_med3d.pth")
 parser.add_argument("--device", type=str, default="cuda")
 parser.add_argument("--work_dir", type=str, default="work_dir")
+parser.add_argument("--num_clicks", type=int, default=5)
+parser.add_argument("--last_click_loss_weight", type=int, default=1)
+parser.add_argument("--base_dir", type=str, default="../drive_data/3D_train_npz_all_400G")
+parser.add_argument("--log_every_n_steps", type=int, default=20)
 
 # train
 parser.add_argument("--num_workers", type=int, default=24)
@@ -64,9 +70,49 @@ logger = logging.getLogger(__name__)
 LOG_OUT_DIR = join(args.work_dir, args.task_name)
 click_methods = {
     "random": get_next_click3D_torch_2,
+    "challenge": get_clicks_for_class_error,
 }
 MODEL_SAVE_PATH = join(args.work_dir, args.task_name)
 os.makedirs(MODEL_SAVE_PATH, exist_ok=True)
+
+LOGGING_DICT = {}
+
+
+def save_batch_stats(losses_dict):
+    for key, value in losses_dict.items():
+        if key not in LOGGING_DICT:
+            LOGGING_DICT[key] = []
+        LOGGING_DICT[key].append(value)
+
+
+def ma(arr, k=1000):
+    res = []
+    curr = np.mean(arr[:k])
+    for i in range(len(arr)):
+        if i < k:
+            res.append(np.mean(arr[:i]))
+        else:
+            curr = 1 / k * arr[i] + (1 - 1 / k) * curr
+            res.append(curr)
+    return res
+
+
+def plot_batch_stats():
+    for i, (key, value) in enumerate(LOGGING_DICT.items()):
+        plt.plot(ma(value), label=key, linewidth=0.5, c=f"C{i}")
+        plt.grid(True)
+    plt.legend()
+    plt.savefig(f"{LOG_OUT_DIR}/step_loss.png", dpi=300)
+    plt.close()
+
+
+def save_niigz(volume, save_path):
+    if os.path.exists(save_path):
+        return
+    volume_np = volume.detach().cpu().float().numpy()[0, 0]
+    volume_nii = nib.Nifti1Image(volume_np, np.eye(4))
+    nib.save(volume_nii, save_path)
+    print(f"Saved volume to {save_path}")
 
 
 def build_model(args):
@@ -99,7 +145,6 @@ def get_dataloaders(args):
         train_sampler = None
         shuffle = True
 
-    # train_dataloader = tio.SubjectsLoader(
     train_dataloader = Union_Dataloader(
         dataset=train_dataset,
         sampler=train_sampler,
@@ -108,6 +153,32 @@ def get_dataloaders(args):
         num_workers=args.num_workers,
         pin_memory=True,
     )
+    return train_dataloader
+
+
+def get_dataloaders_npz(args):
+    train_dataset = NPZDataset(
+        base_dir=args.base_dir,
+        transform=tio.Compose(
+            [
+                tio.ToCanonical(),
+                tio.CropOrPad(
+                    mask_name="label",
+                    target_shape=(args.img_size, args.img_size, args.img_size),
+                ),
+                tio.RandomFlip(axes=(0, 1, 2)),
+            ]
+        ),
+    )
+
+    train_dataloader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
+
     return train_dataloader
 
 
@@ -145,7 +216,10 @@ class BaseTrainer:
 
         self.optimizer = torch.optim.AdamW(
             [
-                {"params": sam_model.image_encoder.parameters()},  # , 'lr': self.args.lr * 0.1},
+                {
+                    "params": sam_model.image_encoder.parameters(),
+                    "lr": self.args.lr * 0.01,
+                },
                 {
                     "params": sam_model.prompt_encoder.parameters(),
                     "lr": self.args.lr * 0.1,
@@ -153,12 +227,22 @@ class BaseTrainer:
                 {
                     "params": sam_model.mask_decoder.parameters(),
                     "lr": self.args.lr * 0.1,
+                    "weight_decay": 0.0 if args.model_type.endswith("norm") else self.args.weight_decay,
                 },
             ],
             lr=self.args.lr,
             betas=(0.9, 0.999),
             weight_decay=self.args.weight_decay,
         )
+        if args.model_type.endswith("norm"):
+            print("Registering weight normalization post hook")
+
+            def normalize_hook(optimizer, *args, **kwargs):
+                for module in sam_model.modules():
+                    if hasattr(module, "normalize_weights"):
+                        module.normalize_weights()
+
+            self.optimizer.register_step_post_hook(normalize_hook)
 
     def set_lr_scheduler(self):
         if self.args.lr_scheduler == "multisteplr":
@@ -179,7 +263,7 @@ class BaseTrainer:
                 dist.barrier()
                 last_ckpt = torch.load(ckp_path, map_location=self.args.device)
             else:
-                last_ckpt = torch.load(ckp_path, map_location=self.args.device)
+                last_ckpt = torch.load(ckp_path, map_location=self.args.device, weights_only=False)
 
         if last_ckpt:
             if self.args.allow_partial_weight:
@@ -224,11 +308,11 @@ class BaseTrainer:
             join(MODEL_SAVE_PATH, f"sam_model_{describe}.pth"),
         )
 
-    def batch_forward(self, sam_model, image_embedding, gt3D, low_res_masks, points=None):
+    def batch_forward(self, sam_model, image_embedding, gt3D, low_res_masks, points=None, boxes=None):
 
         sparse_embeddings, dense_embeddings = sam_model.prompt_encoder(
             points=points,
-            boxes=None,
+            boxes=boxes,
             masks=low_res_masks,
         )
         low_res_masks, iou_predictions = sam_model.mask_decoder(
@@ -243,6 +327,9 @@ class BaseTrainer:
 
     def get_points(self, prev_masks, gt3D):
         batch_points, batch_labels = click_methods[self.args.click_type](prev_masks, gt3D)
+
+        if len(batch_points) != prev_masks.shape[0]:
+            return None, None
 
         points_co = torch.cat(batch_points, dim=0).to(device)
         points_la = torch.cat(batch_labels, dim=0).to(device)
@@ -261,18 +348,75 @@ class BaseTrainer:
             labels_input = points_la
         return points_input, labels_input
 
-    def interaction(self, sam_model, image_embedding, gt3D, num_clicks):
+    def get_bbox_2D(self, gt2D):
+        # https://github.com/JunMa11/CVPR-MedSegFMCompetition/blob/f9ef0731ddbf05b3f1a1399ab4803511168b1e93/get_boxes.py#L44C1-L44C32
+        y_indices, x_indices = np.where(gt2D > 0)
+        x_min, x_max = np.min(x_indices), np.max(x_indices)
+        y_min, y_max = np.min(y_indices), np.max(y_indices)
+        # add perturbation to bounding box coordinates
+        H, W = gt2D.shape
+        bbox_shift = np.random.randint(0, 6, 1)[0]
+        scale_y, scale_x = gt2D.shape
+        bbox_shift_x = int(bbox_shift * scale_x / 256)
+        bbox_shift_y = int(bbox_shift * scale_y / 256)
+
+        x_min = max(0, x_min - bbox_shift_x)
+        x_max = min(W - 1, x_max + bbox_shift_x)
+        y_min = max(0, y_min - bbox_shift_y)
+        y_max = min(H - 1, y_max + bbox_shift_y)
+        boxes = np.array([x_min, y_min, x_max, y_max])
+        return boxes
+
+    def get_bboxes_3D(self, gt3D):
+        # https://github.com/JunMa11/CVPR-MedSegFMCompetition/blob/f9ef0731ddbf05b3f1a1399ab4803511168b1e93/get_boxes.py#L66
+
+        corners_tensor = torch.zeros((gt3D.shape[0], 2, 3), dtype=torch.float32).to(gt3D.device)
+        D, H, W = gt3D.shape[-3:]
+
+        for i in range(gt3D.shape[0]):
+            batch_item = gt3D[i, 0]
+
+            z_indices, y_indices, x_indices = np.where(batch_item.cpu() > 0)
+
+            if not len(z_indices):
+                print("WARNING: No positive elements in labels file, setting box corners to zero.")
+                corners_tensor[i, 0] = 0.0
+                corners_tensor[i, 1] = 100.0  # NOTE what to do here?
+                continue
+
+            z_min, z_max = np.min(z_indices), np.max(z_indices)
+            z_middle = z_indices[len(z_indices) // 2]
+
+            gt_mid = batch_item[z_middle].cpu()
+
+            box_2d = self.get_bbox_2D(gt_mid)
+            x_min, y_min, x_max, y_max = box_2d
+
+            assert z_min == max(0, z_min)
+            assert z_max == min(D - 1, z_max)
+
+            corners_tensor[i, 0, 0] = z_min
+            corners_tensor[i, 0, 1] = y_min
+            corners_tensor[i, 0, 2] = x_min
+
+            corners_tensor[i, 1, 0] = z_max
+            corners_tensor[i, 1, 1] = y_max
+            corners_tensor[i, 1, 2] = x_max
+
+        return corners_tensor
+
+    def interaction(self, sam_model, image_embedding, gt3D):
         return_loss = 0
         prev_masks = torch.zeros_like(gt3D).to(gt3D.device)
         low_res_masks = F.interpolate(
             prev_masks.float(),
-            size=(args.img_size // 4, args.img_size // 4, args.img_size // 4),
+            size=(self.args.img_size // 4, self.args.img_size // 4, self.args.img_size // 4),
         )
         random_insert = np.random.randint(2, 9)
-        for num_click in range(num_clicks):
+        for num_click in range(self.args.num_clicks):
             points_input, labels_input = self.get_points(prev_masks, gt3D)
 
-            if num_click == random_insert or num_click == num_clicks - 1:
+            if num_click == random_insert or num_click == self.args.num_clicks - 1:
                 low_res_masks, prev_masks = self.batch_forward(
                     sam_model, image_embedding, gt3D, low_res_masks, points=None
                 )
@@ -288,27 +432,69 @@ class BaseTrainer:
             return_loss += loss
         return prev_masks, return_loss
 
+    def interaction_modified(self, sam_model, image_embedding, gt3D):
+        losses_dict = {}
+
+        prev_masks = torch.zeros_like(gt3D).to(gt3D.device)
+        low_res_masks = F.interpolate(
+            prev_masks.float(),
+            size=(self.args.img_size // 4, self.args.img_size // 4, self.args.img_size // 4),
+        )
+
+        initial_boxes = self.get_bboxes_3D(gt3D)
+
+        low_res_masks, prev_masks = self.batch_forward(
+            sam_model,
+            image_embedding,
+            gt3D,
+            low_res_masks,
+            points=None,
+            boxes=initial_boxes,
+        )
+
+        return_loss = self.seg_loss(prev_masks, gt3D)
+        losses_dict["box"] = return_loss.item()
+
+        for num_click in range(self.args.num_clicks):
+            points_input, labels_input = self.get_points(prev_masks, gt3D)
+            if points_input is None:
+                return_loss = self.seg_loss(prev_masks, gt3D)
+                return prev_masks, return_loss, {}
+
+            low_res_masks, prev_masks = self.batch_forward(
+                sam_model,
+                image_embedding,
+                gt3D,
+                low_res_masks,
+                points=[points_input, labels_input],
+                boxes=initial_boxes,
+            )
+            loss = self.seg_loss(prev_masks, gt3D)
+            if num_click == args.num_clicks - 1:
+                return_loss += args.last_click_loss_weight * loss
+            else:
+                return_loss += loss
+
+            losses_dict[f"click_{num_click+1}"] = loss.item()
+
+        return prev_masks, return_loss, losses_dict
+
     def get_dice_score(self, prev_masks, gt3D):
         def compute_dice(mask_pred, mask_gt):
-            mask_threshold = 0.5
-
-            mask_pred = mask_pred > mask_threshold
-            mask_gt = mask_gt > 0
-
             volume_sum = mask_gt.sum() + mask_pred.sum()
             if volume_sum == 0:
                 return np.NaN
             volume_intersect = (mask_gt & mask_pred).sum()
             return 2 * volume_intersect / volume_sum
 
-        pred_masks = prev_masks > 0.5
+        pred_masks = prev_masks > 0.0
         true_masks = gt3D > 0
         dice_list = []
         for i in range(true_masks.shape[0]):
             dice_list.append(compute_dice(pred_masks[i], true_masks[i]))
         return (sum(dice_list) / len(dice_list)).item()
 
-    def train_epoch(self, epoch, num_clicks):
+    def train_epoch(self, epoch, args):
         epoch_loss = 0
         epoch_iou = 0
         self.model.train()
@@ -331,7 +517,6 @@ class BaseTrainer:
                 image3D, gt3D = data3D["image"], data3D["label"]
             except Exception as e:
                 print(f"Error processing batch at step {step}: {e}")
-            # import pdb; pdb.set_trace()
             my_context = (
                 self.model.no_sync if self.args.rank != -1 and step % self.args.accumulation_steps != 0 else nullcontext
             )
@@ -343,6 +528,7 @@ class BaseTrainer:
 
                 image3D = image3D.to(device)
                 gt3D = gt3D.to(device).type(torch.long)
+                gt3D = (gt3D > 0).type(torch.long)
                 with torch.amp.autocast("cuda"):
                     image_embedding = sam_model.image_encoder(image3D)
 
@@ -351,7 +537,7 @@ class BaseTrainer:
 
                     pred_list = []
 
-                    prev_masks, loss = self.interaction(sam_model, image_embedding, gt3D, num_clicks=11)
+                    prev_masks, loss, losses_dict = self.interaction_modified(sam_model, image_embedding, gt3D)
 
                 epoch_loss += loss.item()
                 epoch_dice += self.get_dice_score(prev_masks, gt3D)
@@ -360,6 +546,7 @@ class BaseTrainer:
                 loss /= self.args.accumulation_steps
 
                 self.scaler.scale(loss).backward()
+                save_batch_stats(losses_dict)
 
             if step % self.args.accumulation_steps == 0 and step != 0:
                 self.scaler.step(self.optimizer)
@@ -386,6 +573,13 @@ class BaseTrainer:
                     if print_loss < self.step_best_loss:
                         self.step_best_loss = print_loss
 
+            if step % self.args.log_every_n_steps == 0:
+                plot_batch_stats()
+                save_niigz(prev_masks > 0.0, save_path="./example_imgs/low_res_masks_after_click.nii.gz")
+                save_niigz(torch.sigmoid(prev_masks), save_path="./example_imgs/raw_mask_sigmoid.nii.gz")
+                save_niigz(gt3D, save_path="./example_imgs/gt3D.nii.gz")
+                save_niigz(image3D, save_path="./example_imgs/image3D.nii.gz")
+
         epoch_loss /= step + 1
         epoch_dice /= step + 1
 
@@ -410,8 +604,7 @@ class BaseTrainer:
             if self.args.multi_gpu:
                 dist.barrier()
                 self.dataloaders.sampler.set_epoch(epoch)
-            num_clicks = np.random.randint(1, 21)
-            epoch_loss, epoch_iou, epoch_dice, pred_list = self.train_epoch(epoch, num_clicks)
+            epoch_loss, epoch_iou, epoch_dice, pred_list = self.train_epoch(epoch, self.args.num_clicks)
 
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
@@ -496,7 +689,7 @@ def main():
         np.random.seed(2023)
         torch.manual_seed(2023)
         # Load datasets
-        dataloaders = get_dataloaders(args)
+        dataloaders = get_dataloaders_npz(args)
         # Build model
         model = build_model(args)
         # Create trainer
