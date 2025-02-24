@@ -2,6 +2,8 @@ data/*
 ckpt/*
 results/*
 work_dir/*
+example_imgs/*
+weights/*
 */__pycache__/*
 __pycache__/*
 *.pyc
@@ -10,6 +12,10 @@ __pycache__/*
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Ignore NIfTI and PNG files
+*.nii.gz
+*.png
 
 # C extensions
 *.so
