@@ -191,260 +191,251 @@ dockers = sorted(os.listdir(docker_path))
 test_cases = sorted(os.listdir(test_img_path))
 
 for docker in dockers:
-    try:
-        # create temp folers for inference one-by-one
-        if os.path.exists(input_temp):
-            shutil.rmtree(input_temp)
-        if os.path.exists(output_temp):
-            shutil.rmtree(output_temp)
-        os.makedirs(input_temp)
-        os.makedirs(output_temp)
+    # create temp folers for inference one-by-one
+    if os.path.exists(input_temp):
+        shutil.rmtree(input_temp)
+    if os.path.exists(output_temp):
+        shutil.rmtree(output_temp)
+    os.makedirs(input_temp)
+    os.makedirs(output_temp)
 
-        # load docker and create a new folder to save segmentation results
-        teamname = docker.split(".")[0].lower()
-        print("teamname docker: ", docker)
-        os.system("docker image load -i {}".format(join(docker_path, docker)))
-        team_outpath = join(save_path, teamname)
-        if os.path.exists(team_outpath):
-            shutil.rmtree(team_outpath)
-        os.makedirs(team_outpath)
-        os.system(
-            f"chmod -R 777 ./* >/dev/null 2>&1"
-        )  # ignore output warnings/errors of this command with >/dev/null 2>&1
+    # load docker and create a new folder to save segmentation results
+    teamname = docker.split(".")[0].lower()
+    print("teamname docker: ", docker)
+    os.system("docker image load -i {}".format(join(docker_path, docker)))
+    team_outpath = join(save_path, teamname)
+    if os.path.exists(team_outpath):
+        shutil.rmtree(team_outpath)
+    os.makedirs(team_outpath)
+    os.system(f"chmod -R 777 ./* >/dev/null 2>&1")  # ignore output warnings/errors of this command with >/dev/null 2>&1
 
-        # Evaluation Metrics
-        metric = OrderedDict()
-        metric["CaseName"] = []
-        # 5 Metrics
-        metric["TotalRunningTime"] = []
-        metric["RunningTime_1"] = []
-        metric["RunningTime_2"] = []
-        metric["RunningTime_3"] = []
-        metric["RunningTime_4"] = []
-        metric["RunningTime_5"] = []
-        metric["RunningTime_6"] = []
-        metric["DSC_AUC"] = []
-        metric["NSD_AUC"] = []
-        metric["DSC_Final"] = []
-        metric["NSD_Final"] = []
-        n_clicks = 5
-        time_warning = False
+    # Evaluation Metrics
+    metric = OrderedDict()
+    metric["CaseName"] = []
+    # 5 Metrics
+    metric["TotalRunningTime"] = []
+    metric["RunningTime_1"] = []
+    metric["RunningTime_2"] = []
+    metric["RunningTime_3"] = []
+    metric["RunningTime_4"] = []
+    metric["RunningTime_5"] = []
+    metric["RunningTime_6"] = []
+    metric["DSC_AUC"] = []
+    metric["NSD_AUC"] = []
+    metric["DSC_Final"] = []
+    metric["NSD_Final"] = []
+    n_clicks = 5
+    time_warning = False
 
-        # To obtain the running time for each case, testing cases are inferred one-by-one
-        for case in test_cases:
-            real_running_time = 0
-            dscs = []
-            nsds = []
-            all_segs = []
-            no_bbox = False
+    # To obtain the running time for each case, testing cases are inferred one-by-one
+    for case in test_cases:
+        real_running_time = 0
+        dscs = []
+        nsds = []
+        all_segs = []
+        no_bbox = False
 
-            # copy input image to accumulate clicks in its dict
-            shutil.copy(join(test_img_path, case), input_temp)
-            if validation_gts_path is None:  # for training images
-                gts = np.load(join(input_temp, case))["gts"]
-            else:  # for validation or test images --> gts are in separate files to avoid label leakage during the course of the challenge
-                gts = np.load(join(validation_gts_path, case))["gts"]
+        # copy input image to accumulate clicks in its dict
+        shutil.copy(join(test_img_path, case), input_temp)
+        if validation_gts_path is None:  # for training images
+            gts = np.load(join(input_temp, case))["gts"]
+        else:  # for validation or test images --> gts are in separate files to avoid label leakage during the course of the challenge
+            gts = np.load(join(validation_gts_path, case))["gts"]
 
-            # foreground and background clicks for each class
-            clicks_cls = [{"fg": [], "bg": []} for _ in np.unique(gts)[1:]]  # skip background class 0
+        # foreground and background clicks for each class
+        clicks_cls = [{"fg": [], "bg": []} for _ in np.unique(gts)[1:]]  # skip background class 0
 
-            for it in range(n_clicks + 1):  # + 1 due to bbox pred at iteration 0
-                if it == 0:
-                    if "boxes" not in np.load(join(input_temp, case)).keys():
-                        if verbose:
-                            print(f"This sample does not use a Bounding Box for the initial iteration {it}")
-                        no_bbox = True
-                        metric["RunningTime_1"] = 0
-                        continue
+        for it in range(n_clicks + 1):  # + 1 due to bbox pred at iteration 0
+            if it == 0:
+                if "boxes" not in np.load(join(input_temp, case)).keys():
                     if verbose:
-                        print(f"Using Bounding Box for iteration {it}")
-                else:
-                    if verbose:
-                        print(f"Using Clicks for iteration {it}")
-                    if os.path.exists(join(output_temp, case)):
-                        segs = np.load(join(output_temp, case))["segs"].astype(np.uint8)  # previous prediction
-                    else:
-                        segs = np.zeros_like(gts).astype(
-                            np.uint8
-                        )  # in case the bbox prediction did not produce a result
-                    all_segs.append(segs.astype(np.uint8))
-
-                    # Refinement clicks
-                    for ind, cls in enumerate(sorted(np.unique(gts)[1:])):
-                        if cls == 0:
-                            continue  # skip background
-
-                        segs_cls = (segs == cls).astype(np.uint8)
-                        gts_cls = (gts == cls).astype(np.uint8)
-
-                        # Compute error mask
-                        error_mask = (segs_cls != gts_cls).astype(np.uint8)
-                        if np.sum(error_mask) > 0:
-                            errors = cc3d.connected_components(error_mask, connectivity=26)  # 26 for 3D connectivity
-
-                            # Calculate the sizes of connected error components
-                            component_sizes = np.bincount(errors.flat)
-
-                            # Ignore non-error regions
-                            component_sizes[0] = 0
-
-                            # Find the largest error component
-                            largest_component_error = np.argmax(component_sizes)
-
-                            # Find the voxel coordinates of the largest error component
-                            largest_component = errors == largest_component_error
-
-                            # Get bounding box of the largest error component to limit computation
-                            coords = np.argwhere(largest_component)
-                            min_coords = coords.min(axis=0)
-                            max_coords = coords.max(axis=0)
-
-                            # Crop error to the bounding box of the largest error component
-                            cropped_mask = largest_component[
-                                min_coords[0] : max_coords[0],
-                                min_coords[1] : max_coords[1],
-                                min_coords[2] : max_coords[2],
-                            ]
-
-                            # Compute distance transform only within the bounding box to save time
-                            edt = distance_transform_edt(cropped_mask)
-
-                            if torch.cuda.is_available():  # GPU available
-                                import cupy as cp
-                                from cucim.core.operations import morphology
-
-                                error_mask_cp = cp.array(cropped_mask)
-                                edt_cp = morphology.distance_transform_edt(error_mask_cp)
-                                center = cp.unravel_index(cp.argmax(edt_cp), edt_cp.shape)
-                                center = np.array([int(center[0]), int(center[1]), int(center[2])])
-                            else:  # CPU available only
-                                edt = distance_transform_edt(cropped_mask)
-                                # Find the center in the cropped mask
-                                center = np.unravel_index(np.argmax(edt), edt.shape)
-
-                            center = tuple(min_coords + center)
-
-                            if gts_cls[center] == 0:  # oversegmentation -> place background click
-                                assert segs_cls[center] == 1
-                                clicks_cls[ind]["bg"].append(list(center))
-                            else:  # undersegmentation -> place foreground click
-                                assert segs_cls[center] == 0
-                                clicks_cls[ind]["fg"].append(list(center))
-
-                            assert largest_component[center]  # click within error
-
-                            if verbose:
-                                print(f"Class {cls}: Largest error component center is at {center}")
-                        else:
-                            if verbose:
-                                print(
-                                    f"Class {cls}: No error connected components found. Prediction is perfect! No clicks were added."
-                                )
-
-                    # update model input with new click
-                    input_img = np.load(join(input_temp, case))
-
-                    if validation_gts_path is None:
-                        np.savez_compressed(
-                            join(input_temp, case),
-                            imgs=input_img["imgs"],
-                            gts=input_img["gts"],  # only for training images
-                            spacing=input_img["spacing"],
-                            clicks=clicks_cls,
-                            prev_pred=segs,
-                        )
-                    else:
-                        np.savez_compressed(
-                            join(input_temp, case),
-                            imgs=input_img["imgs"],
-                            spacing=input_img["spacing"],
-                            clicks=clicks_cls,
-                            prev_pred=segs,
-                        )
-
-                # Model inference on the current input
-                if torch.cuda.is_available():  # GPU available
-                    cmd = 'docker container run --gpus "device=0" -m 8G --name {} --rm -v $PWD/inputs/:/workspace/inputs/ -v $PWD/outputs/:/workspace/outputs/ {}:latest /bin/bash -c "sh predict.sh" '.format(
-                        teamname, teamname
-                    )
-                else:
-                    cmd = 'docker container run -m 8G --name {} --rm -v $PWD/inputs/:/workspace/inputs/ -v $PWD/outputs/:/workspace/outputs/ {}:latest /bin/bash -c "sh predict.sh" '.format(
-                        teamname, teamname
-                    )
+                        print(f"This sample does not use a Bounding Box for the initial iteration {it}")
+                    no_bbox = True
+                    metric["RunningTime_1"] = 0
+                    continue
                 if verbose:
-                    print(teamname, " docker command:", cmd, "\n", "testing image name:", case)
-                start_time = time.time()
-                result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-                infer_time = time.time() - start_time
-
-                if result.returncode != 0:
-                    raise RuntimeError(
-                        f"predict.sh failed! Exit code: {result.returncode}\nError Output:\n{result.stderr}"
-                    )
-
-                real_running_time += infer_time  # only add the inference time without the click generation time
-                print(f"{case} finished! Inference time: {infer_time}")
-                metric[f"RunningTime_{it + 1}"] = infer_time
-
-                # save metrics
-                segs = np.load(join(output_temp, case))["segs"]
+                    print(f"Using Bounding Box for iteration {it}")
+            else:
+                if verbose:
+                    print(f"Using Clicks for iteration {it}")
+                if os.path.exists(join(output_temp, case)):
+                    segs = np.load(join(output_temp, case))["segs"].astype(np.uint8)  # previous prediction
+                else:
+                    segs = np.zeros_like(gts).astype(np.uint8)  # in case the bbox prediction did not produce a result
                 all_segs.append(segs.astype(np.uint8))
 
-                dsc = compute_multi_class_dsc(gts, segs)
-                # compute nsd
-                if dsc > 0.2:
-                    # only compute nsd when dice > 0.2 because NSD is also low when dice is too low
-                    nsd = compute_multi_class_nsd(gts, segs, np.load(join(input_temp, case))["spacing"])
-                else:
-                    nsd = 0.0  # Assume model performs poor on this sample
-                dscs.append(dsc)
-                nsds.append(nsd)
-                print("Dice", dsc, "NSD", nsd)
-                seg_name = case
+                # Refinement clicks
+                for ind, cls in enumerate(sorted(np.unique(gts)[1:])):
+                    if cls == 0:
+                        continue  # skip background
 
-                # Copy temp prediction to the final folder
-                try:
-                    shutil.copy(join(output_temp, seg_name), join(team_outpath, seg_name))
-                    segs = np.load(join(team_outpath, seg_name))["segs"]
+                    segs_cls = (segs == cls).astype(np.uint8)
+                    gts_cls = (gts == cls).astype(np.uint8)
+
+                    # Compute error mask
+                    error_mask = (segs_cls != gts_cls).astype(np.uint8)
+                    if np.sum(error_mask) > 0:
+                        errors = cc3d.connected_components(error_mask, connectivity=26)  # 26 for 3D connectivity
+
+                        # Calculate the sizes of connected error components
+                        component_sizes = np.bincount(errors.flat)
+
+                        # Ignore non-error regions
+                        component_sizes[0] = 0
+
+                        # Find the largest error component
+                        largest_component_error = np.argmax(component_sizes)
+
+                        # Find the voxel coordinates of the largest error component
+                        largest_component = errors == largest_component_error
+
+                        # Get bounding box of the largest error component to limit computation
+                        coords = np.argwhere(largest_component)
+                        min_coords = coords.min(axis=0)
+                        max_coords = coords.max(axis=0)
+
+                        # Crop error to the bounding box of the largest error component
+                        cropped_mask = largest_component[
+                            min_coords[0] : max_coords[0],
+                            min_coords[1] : max_coords[1],
+                            min_coords[2] : max_coords[2],
+                        ]
+
+                        # Compute distance transform only within the bounding box to save time
+                        edt = distance_transform_edt(cropped_mask)
+
+                        if torch.cuda.is_available():  # GPU available
+                            import cupy as cp
+                            from cucim.core.operations import morphology
+
+                            error_mask_cp = cp.array(cropped_mask)
+                            edt_cp = morphology.distance_transform_edt(error_mask_cp)
+                            center = cp.unravel_index(cp.argmax(edt_cp), edt_cp.shape)
+                            center = np.array([int(center[0]), int(center[1]), int(center[2])])
+                        else:  # CPU available only
+                            edt = distance_transform_edt(cropped_mask)
+                            # Find the center in the cropped mask
+                            center = np.unravel_index(np.argmax(edt), edt.shape)
+
+                        center = tuple(min_coords + center)
+
+                        if gts_cls[center] == 0:  # oversegmentation -> place background click
+                            assert segs_cls[center] == 1
+                            clicks_cls[ind]["bg"].append(list(center))
+                        else:  # undersegmentation -> place foreground click
+                            assert segs_cls[center] == 0
+                            clicks_cls[ind]["fg"].append(list(center))
+
+                        assert largest_component[center]  # click within error
+
+                        if verbose:
+                            print(f"Class {cls}: Largest error component center is at {center}")
+                    else:
+                        if verbose:
+                            print(
+                                f"Class {cls}: No error connected components found. Prediction is perfect! No clicks were added."
+                            )
+
+                # update model input with new click
+                input_img = np.load(join(input_temp, case))
+
+                if validation_gts_path is None:
                     np.savez_compressed(
-                        join(team_outpath, seg_name),
-                        segs=segs,
-                        all_segs=all_segs,  # store all intermediate predictions
+                        join(input_temp, case),
+                        imgs=input_img["imgs"],
+                        gts=input_img["gts"],  # only for training images
+                        spacing=input_img["spacing"],
+                        clicks=clicks_cls,
+                        prev_pred=segs,
                     )
-                except:
-                    print(f"{join(output_temp, seg_name)}, {join(team_outpath, seg_name)}")
-                    print("Final prediction could not be copied!")
+                else:
+                    np.savez_compressed(
+                        join(input_temp, case),
+                        imgs=input_img["imgs"],
+                        spacing=input_img["spacing"],
+                        clicks=clicks_cls,
+                        prev_pred=segs,
+                    )
 
-            if real_running_time > 90 * (len(np.unique(gts)) - 1):
-                print(
-                    "[WARNING] Your model seems to take more than 90 seconds per class during inference! The final test set will have a time constraint of 90s per class --> Make sure to optimize your approach!"
+            # Model inference on the current input
+            if torch.cuda.is_available():  # GPU available
+                cmd = 'docker container run --gpus "device=0" -m 8G --name {} --rm -v $PWD/inputs/:/workspace/inputs/ -v $PWD/outputs/:/workspace/outputs/ {}:latest /bin/bash -c "sh predict.sh" '.format(
+                    teamname, teamname
                 )
-                time_warning = True
-            # Compute interactive metrics
-            n_interactions = n_clicks if no_bbox else n_clicks + 1
-            dsc_auc = integrate.cumulative_trapezoid(np.array(dscs), np.arange(n_interactions))[-1]
-            nsd_auc = integrate.cumulative_trapezoid(np.array(nsds), np.arange(n_interactions))[-1]
-            dsc_final = dscs[-1]
-            nsd_final = nsds[-1]
-            metric["CaseName"].append(case)
-            metric["TotalRunningTime"].append(real_running_time)
-            metric["DSC_AUC"].append(dsc_auc)
-            metric["NSD_AUC"].append(nsd_auc)
-            metric["DSC_Final"].append(dsc_final)
-            metric["NSD_Final"].append(nsd_final)
-            os.remove(join(input_temp, case))
+            else:
+                cmd = 'docker container run -m 8G --name {} --rm -v $PWD/inputs/:/workspace/inputs/ -v $PWD/outputs/:/workspace/outputs/ {}:latest /bin/bash -c "sh predict.sh" '.format(
+                    teamname, teamname
+                )
+            if verbose:
+                print(teamname, " docker command:", cmd, "\n", "testing image name:", case)
+            start_time = time.time()
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            infer_time = time.time() - start_time
 
-        metric_df = pd.DataFrame(metric)
-        metric_df.to_csv(join(team_outpath, teamname + "_metrics.csv"), index=False)
+            if result.returncode != 0:
+                raise RuntimeError(f"predict.sh failed! Exit code: {result.returncode}\nError Output:\n{result.stderr}")
 
-        # Clean up for next docker
-        torch.cuda.empty_cache()
-        os.system("docker rmi {}:latest".format(teamname))
-        shutil.rmtree(input_temp)
-        shutil.rmtree(output_temp)
-        if time_warning:  # repeat warning at the end as well
+            real_running_time += infer_time  # only add the inference time without the click generation time
+            print(f"{case} finished! Inference time: {infer_time}")
+            metric[f"RunningTime_{it + 1}"] = infer_time
+
+            # save metrics
+            segs = np.load(join(output_temp, case))["segs"]
+            all_segs.append(segs.astype(np.uint8))
+
+            dsc = compute_multi_class_dsc(gts, segs)
+            # compute nsd
+            if dsc > 0.2:
+                # only compute nsd when dice > 0.2 because NSD is also low when dice is too low
+                nsd = compute_multi_class_nsd(gts, segs, np.load(join(input_temp, case))["spacing"])
+            else:
+                nsd = 0.0  # Assume model performs poor on this sample
+            dscs.append(dsc)
+            nsds.append(nsd)
+            print("Dice", dsc, "NSD", nsd)
+            seg_name = case
+
+            # Copy temp prediction to the final folder
+            try:
+                shutil.copy(join(output_temp, seg_name), join(team_outpath, seg_name))
+                segs = np.load(join(team_outpath, seg_name))["segs"]
+                np.savez_compressed(
+                    join(team_outpath, seg_name),
+                    segs=segs,
+                    all_segs=all_segs,  # store all intermediate predictions
+                )
+            except:
+                print(f"{join(output_temp, seg_name)}, {join(team_outpath, seg_name)}")
+                print("Final prediction could not be copied!")
+
+        if real_running_time > 90 * (len(np.unique(gts)) - 1):
             print(
-                "[WARNING] Your model seems to take more than 90 seconds per class during inference for some images! The final test set will have a time constraint of 90s per class --> Make sure to optimize your approach!"
+                "[WARNING] Your model seems to take more than 90 seconds per class during inference! The final test set will have a time constraint of 90s per class --> Make sure to optimize your approach!"
             )
-    except Exception as e:
-        print(e)
+            time_warning = True
+        # Compute interactive metrics
+        n_interactions = n_clicks if no_bbox else n_clicks + 1
+        dsc_auc = integrate.cumulative_trapezoid(np.array(dscs), np.arange(n_interactions))[-1]
+        nsd_auc = integrate.cumulative_trapezoid(np.array(nsds), np.arange(n_interactions))[-1]
+        dsc_final = dscs[-1]
+        nsd_final = nsds[-1]
+        metric["CaseName"].append(case)
+        metric["TotalRunningTime"].append(real_running_time)
+        metric["DSC_AUC"].append(dsc_auc)
+        metric["NSD_AUC"].append(nsd_auc)
+        metric["DSC_Final"].append(dsc_final)
+        metric["NSD_Final"].append(nsd_final)
+        os.remove(join(input_temp, case))
+
+    metric_df = pd.DataFrame(metric)
+    metric_df.to_csv(join(team_outpath, teamname + "_metrics.csv"), index=False)
+
+    # Clean up for next docker
+    torch.cuda.empty_cache()
+    os.system("docker rmi {}:latest".format(teamname))
+    shutil.rmtree(input_temp)
+    shutil.rmtree(output_temp)
+    if time_warning:  # repeat warning at the end as well
+        print(
+            "[WARNING] Your model seems to take more than 90 seconds per class during inference for some images! The final test set will have a time constraint of 90s per class --> Make sure to optimize your approach!"
+        )
