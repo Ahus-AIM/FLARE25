@@ -1,0 +1,30 @@
+name: Submission
+on:
+  pull_request:
+
+jobs:
+  submission:
+    runs-on: self-hosted
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        python-version: '3.12'
+    - name: Fix permissions for Git
+      run: |
+        sudo chown -R $(whoami) .git/
+        sudo chmod -R u+rwX .git/
+    - name: Install necessary packages
+      run: |
+        python3 -m pip install torch
+        python3 -m pip install connected-components-3d
+        python3 -m pip install cucim-cu12
+    - name: Build docker
+      run: docker build -t cvpr .
+    - name: Store docker image
+      run: |
+        mkdir docker_folder
+        docker image save cvpr:latest > docker_folder/cvpr.tar
+    - name: Run inference
+      run: |
+        mkdir submission_outputs
+        python3 CVPR25_iter_eval.py --test_img_path "/data/github-actions/val" --validation_gts_path "/data/github-actions/val_gts" --save_path "./submission_outputs" --docker_folder_path "./docker_folder" -v
