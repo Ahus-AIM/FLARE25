@@ -292,7 +292,7 @@ for docker in dockers:
                         # Get bounding box of the largest error component to limit computation
                         coords = np.argwhere(largest_component)
                         min_coords = coords.min(axis=0)
-                        max_coords = coords.max(axis=0)
+                        max_coords = coords.max(axis=0) + 1  # NOTE: This is a custom bug-fix.
 
                         # Crop error to the bounding box of the largest error component
                         cropped_mask = largest_component[
