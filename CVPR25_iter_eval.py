@@ -1,6 +1,6 @@
 """
 The code was adapted from the CVPR24 Segment Anything in Medical Images on a Laptop Challenge
-https://www.codabench.org/competitions/1847/ 
+https://www.codabench.org/competitions/1847/
 
 The testing images will be evaluated one by one.
 
@@ -8,24 +8,24 @@ Folder structure:
 CVPR25_iter_eval.py
 --docker_folder path # submitted docker containers from participants
     - docker_dir
-        - teamname_1.tar.gz 
+        - teamname_1.tar.gz
         - teamname_2.tar.gz
         - ...
 --test_img_path # test images
     - imgs
         - case1.npz  # test image
-        - case2.npz  
-        - ...   
+        - case2.npz
+        - ...
 --save_path  # segmentation results
     - output
         - case1.npz  # segmentation file name is the same as the testing image name
-        - case2.npz  
+        - case2.npz
         - ...
 --validation_gts_path # path to validation / test set GT files
     -   Contains the npz files with the same name as the images but only 'gts' key is available in each file instead of storing it in the image itself. This is done to prevent label leakage during the challenge.
     - validation_gts
         - case1.npz  # file containing only the 'gts' key
-        - case2.npz  
+        - case2.npz
         - ...
 --verbose
     -   Whether to have a more detailed output, e.g. coordinates of generated clicks
@@ -36,8 +36,8 @@ This script is designed for evaluating docker submissions for the CVPR25: Founda
 ##########################################################
 ######### Docker Submission Evaluation Process ###########
 ##########################################################
-Submissions for the CVPR 2025: Foundation Models for Interactive 3D Biomedical Image Segmentation Challenge will be evaluated using an iterative refinement approach. 
-Each participant's Docker container will be tested on a set of medical images provided as .npz files. 
+Submissions for the CVPR 2025: Foundation Models for Interactive 3D Biomedical Image Segmentation Challenge will be evaluated using an iterative refinement approach.
+Each participant's Docker container will be tested on a set of medical images provided as .npz files.
 The evaluation process follows these key steps:
     -   Initial Prediction: Image +  Bounding Box Prompt (1 prediction)
         -   Each test case begins with a bounding box prompt, specified in the 'bbox' key of the test image. This serves as the starting point for the segmentation.
@@ -52,7 +52,7 @@ The evaluation process follows these key steps:
 ###############################################################
 The interactions are stored in the 'bbox' and 'clicks' keys of each input .npz image.
     - The bounding box is stored in the 'bbox' key as a list of dictionaries [{'z_min': 27, 'z_max': 396, 'z_mid': 311, 'z_mid_x_min': 175, 'z_mid_y_min': 94, 'z_mid_x_max': 278, 'z_mid_y_max': 233}, ...] containing bbox coordinates for each class.
-    - The clicks are provided in the 'clicks' key as a list of dictionaries [{'fg': [click_fg_1, clicks_fg_2,...], 'bg': [click_bg_1, click_bg_2,...]}, ...] 
+    - The clicks are provided in the 'clicks' key as a list of dictionaries [{'fg': [click_fg_1, clicks_fg_2,...], 'bg': [click_bg_1, click_bg_2,...]}, ...]
 where click_fg_i and click_bg_i are 3-element arrays with the 3D click coordinates [x, y, z].
 
 #######################################
@@ -87,7 +87,7 @@ This script executes the following steps:
         - 2)-6) Click refinement predictions (each new click is placed in the center of the largest error component)
             - If the center of the largest error is part of the background --> a background click is placed
             - Otherwise, a foreground click is placed
-        - Steps 1)-6) are done in parallel for all segmentation classes in 6 interaction steps (6 docker runs) 
+        - Steps 1)-6) are done in parallel for all segmentation classes in 6 interaction steps (6 docker runs)
 
 3. GPU vs. CPU Computation:
    - If a GPU is available, the script uses `cupy` and `cucim` for accelerated EDT computation.
@@ -95,14 +95,14 @@ This script executes the following steps:
 
 4. Metrics Calculation:
    - Computes multi-class DSC and NSD for each image.
-   - For the final metrics, the AUC (Area Under the Curve) for the DSC and NSD are computed for iterative improvement across the 6 interactive iterations. 
+   - For the final metrics, the AUC (Area Under the Curve) for the DSC and NSD are computed for iterative improvement across the 6 interactive iterations.
         - The AUC quantifies the cumulative performance improvement over the 6 successive iterations (bbox + 5 clicks) providing a holistic view of the segmentation refinement process.
    - The final DSC and NSD after all 6 interactive steps are also computed.
         - These metrics reflect the final segmentation quality achieved after all refinements, indicating the model's final performance.
    - The last metric is the inference time which is the average inference time over the 6 interactive steps.
 
 5. Output:
-   - Segmentation results are saved in the specified output directory. 
+   - Segmentation results are saved in the specified output directory.
         -   Final prediction in the 'segs' key
         -   Intermediate prediction in the 'all_segs' key
    - Metrics for each test case are compiled into a CSV file.
@@ -114,23 +114,22 @@ This script executes the following steps:
 a mandatory input.
 """
 
-import subprocess
 import os
+import subprocess
 
 join = os.path.join
+import argparse
 import shutil
 import time
-import torch
-import argparse
 from collections import OrderedDict
-import pandas as pd
-import numpy as np
 
-
-from scipy.ndimage import distance_transform_edt
 import cc3d
-from surface_distance import compute_surface_distances, compute_surface_dice_at_tolerance, compute_dice_coefficient
+import numpy as np
+import pandas as pd
+import torch
 from scipy import integrate
+from scipy.ndimage import distance_transform_edt
+from surface_distance import compute_dice_coefficient, compute_surface_dice_at_tolerance, compute_surface_distances
 
 
 # Taken from CVPR24 challenge code with change to np.unique
@@ -207,7 +206,7 @@ for docker in dockers:
     if os.path.exists(team_outpath):
         shutil.rmtree(team_outpath)
     os.makedirs(team_outpath)
-    os.system(f"chmod -R 777 ./* >/dev/null 2>&1")  # ignore output warnings/errors of this command with >/dev/null 2>&1
+    os.system("chmod -R 777 ./* >/dev/null 2>&1")  # ignore output warnings/errors of this command with >/dev/null 2>&1
 
     # Evaluation Metrics
     metric = OrderedDict()
@@ -404,9 +403,9 @@ for docker in dockers:
                     segs=segs,
                     all_segs=all_segs,  # store all intermediate predictions
                 )
-            except:
+            except Exception as e:
                 print(f"{join(output_temp, seg_name)}, {join(team_outpath, seg_name)}")
-                print("Final prediction could not be copied!")
+                print("Final prediction could not be copied! Error:", e)
 
         if real_running_time > 90 * (len(np.unique(gts)) - 1):
             print(
