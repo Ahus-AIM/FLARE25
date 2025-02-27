@@ -1,0 +1,7 @@
+# Ignore everything by default
+**
+
+# Allow only required files and directories
+!src/submission/
+!src/model/
+!work_dir/mar3/sam_model_latest.pth
