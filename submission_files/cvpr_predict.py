@@ -1,7 +1,8 @@
-from typing import List
-import numpy as np
 import argparse
 import os
+from typing import List
+
+import numpy as np
 
 
 def read_input_files(folder: str) -> List[str]:
@@ -9,8 +10,8 @@ def read_input_files(folder: str) -> List[str]:
 
 
 def predict(x):
-    if 'prev_pred' in x:
-        return x['prev_pred']
+    if "prev_pred" in x:
+        return x["prev_pred"]
     pred = np.zeros(x["imgs"].shape)
     for i in range(len(x["boxes"])):
         x_min, x_max = x["boxes"][i]["z_mid_x_min"], x["boxes"][i]["z_mid_x_max"] + 1

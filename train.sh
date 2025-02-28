@@ -1,1 +1,1 @@
-python train.py --multi_gpu
+python train.py --batch_size 2 --model_type vit_b_ori_norm --num_workers 4 --accumulation_steps 20 --click_type challenge --checkpoint weights/sam_med3d_turbo.pth --allow_partial_weight

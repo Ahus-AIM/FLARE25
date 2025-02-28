@@ -1,0 +1,21 @@
+name: Lint python
+on: [push]
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python
+      run: python3 -m pip install --upgrade pip
+    - name: Install dependencies
+      run: python3 -m pip install flake8 isort
+    - name: Check import sorting with isort
+      run: isort --check-only --diff .
+    - name: Lint python with flake8
+      run: flake8 .
+    - uses: psf/black@stable
+      with:
+        options: "--check --verbose"
+        src: "."
+        jupyter: false
+        version: "24.8.0"

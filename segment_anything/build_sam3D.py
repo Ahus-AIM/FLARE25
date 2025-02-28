@@ -8,7 +8,7 @@ from functools import partial
 
 import torch
 
-from .modeling import ImageEncoderViT3D, MaskDecoder3D, PromptEncoder3D, Sam3D
+from .modeling import ImageEncoderViT3D, MaskDecoder3D, NormalizedMaskDecoder3D, PromptEncoder3D, Sam3D
 
 
 def build_sam3D_vit_h(checkpoint=None):
@@ -55,12 +55,24 @@ def build_sam3D_vit_b_ori(checkpoint=None):
     )
 
 
+def build_sam3D_vit_b_ori_norm(checkpoint=None):
+    return _build_sam3D_ori(
+        encoder_embed_dim=768,
+        encoder_depth=12,
+        encoder_num_heads=12,
+        encoder_global_attn_indexes=[2, 5, 8, 11],
+        checkpoint=checkpoint,
+        normalized=True,
+    )
+
+
 sam_model_registry3D = {
     "default": build_sam3D_vit_h,
     "vit_h": build_sam3D_vit_h,
     "vit_l": build_sam3D_vit_l,
     "vit_b": build_sam3D_vit_b,
     "vit_b_ori": build_sam3D_vit_b_ori,
+    "vit_b_ori_norm": build_sam3D_vit_b_ori_norm,
 }
 
 
@@ -123,11 +135,13 @@ def _build_sam3D_ori(
     encoder_num_heads,
     encoder_global_attn_indexes,
     checkpoint=None,
+    normalized=False,
 ):
     prompt_embed_dim = 384
     image_size = 128
     vit_patch_size = 16
     image_embedding_size = image_size // vit_patch_size
+    mask_decoder_class = NormalizedMaskDecoder3D if normalized else MaskDecoder3D
     sam = Sam3D(
         image_encoder=ImageEncoderViT3D(
             depth=encoder_depth,
@@ -153,7 +167,7 @@ def _build_sam3D_ori(
             input_image_size=(image_size, image_size, image_size),
             mask_in_chans=16,
         ),
-        mask_decoder=MaskDecoder3D(
+        mask_decoder=mask_decoder_class(
             num_multimask_outputs=3,
             transformer_dim=prompt_embed_dim,
             iou_head_depth=3,

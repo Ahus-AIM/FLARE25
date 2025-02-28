@@ -58,6 +58,11 @@ class PromptEncoder3D(nn.Module):
         self.num_point_embeddings: int = 2  # pos/neg point
         point_embeddings = [nn.Embedding(1, embed_dim) for i in range(self.num_point_embeddings)]
         self.point_embeddings = nn.ModuleList(point_embeddings)
+
+        self.num_corner_embeddings: int = 2  # box corners
+        corner_embeddings = [nn.Embedding(1, embed_dim) for i in range(self.num_corner_embeddings)]
+        self.corner_embeddings = nn.ModuleList(corner_embeddings)
+
         self.not_a_point_embed = nn.Embedding(1, embed_dim)
 
         self.mask_input_size = (
@@ -109,11 +114,13 @@ class PromptEncoder3D(nn.Module):
 
     def _embed_boxes(self, boxes: torch.Tensor) -> torch.Tensor:
         """Embeds box prompts."""
+        # NOTE this does not seem to be correctly implemeted in the original version SAM-Med3D // Elias
         boxes = boxes + 0.5  # Shift to center of pixel
-        coords = boxes.reshape(-1, 2, 2)
-        corner_embedding = self.pe_layer.forward_with_coords(coords, self.input_image_size)
-        corner_embedding[:, 0, :] += self.point_embeddings[2].weight
-        corner_embedding[:, 1, :] += self.point_embeddings[3].weight
+        assert boxes.shape[2] == 3, f"Expected boxes to have shape Bx2x3, got {boxes.shape}"
+        assert boxes.shape[1] == 2, f"Expected boxes to have shape Bx2x3, got {boxes.shape}"
+        corner_embedding = self.pe_layer.forward_with_coords(boxes, self.input_image_size)
+        corner_embedding[:, 0, :] += self.corner_embeddings[0].weight
+        corner_embedding[:, 1, :] += self.corner_embeddings[1].weight
         return corner_embedding
 
     def _embed_masks(self, masks: torch.Tensor) -> torch.Tensor:
