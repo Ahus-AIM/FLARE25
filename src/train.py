@@ -8,7 +8,6 @@ import numpy as np
 
 join = os.path.join
 import argparse
-from contextlib import nullcontext
 
 import nibabel as nib
 import torch
@@ -36,6 +35,7 @@ parser.add_argument("--num_clicks", type=int, default=5)
 parser.add_argument("--last_click_loss_weight", type=int, default=1)
 parser.add_argument("--base_dir", type=str, default="../drive_data/3D_train_npz_random_10percent_16G")
 parser.add_argument("--log_every_n_steps", type=int, default=20)
+parser.add_argument("--dry_run", action="store_true", default=False)
 
 # train
 parser.add_argument("--num_workers", type=int, default=24)
@@ -112,40 +112,6 @@ def save_niigz(volume, save_path):
 def build_model(args):
     sam_model = sam_model_registry3D[args.model_type](checkpoint=None).to(device)
     return sam_model
-
-
-# def get_dataloaders(args):
-#     train_dataset = Dataset_Union_ALL(
-#         paths=img_datas,
-#         transform=tio.Compose(
-#             [
-#                 # tio.ToCanonical(),
-#                 # tio.CropOrPad(
-#                 #     # mask_name="label",
-#                 #     target_shape=(args.img_size, args.img_size, args.img_size),
-#                 # ),  # crop only object region
-#                 tio.RandomFlip(axes=(0, 1, 2)),
-#             ]
-#         ),
-#         threshold=1000,
-#     )
-
-#     if args.multi_gpu:
-#         train_sampler = DistributedSampler(train_dataset)
-#         shuffle = False
-#     else:
-#         train_sampler = None
-#         shuffle = True
-
-#     train_dataloader = Union_Dataloader(
-#         dataset=train_dataset,
-#         sampler=train_sampler,
-#         batch_size=args.batch_size,
-#         shuffle=shuffle,
-#         num_workers=args.num_workers,
-#         pin_memory=True,
-#     )
-#     return train_dataloader
 
 
 def get_dataloaders_npz(args):
@@ -477,12 +443,11 @@ class BaseTrainer:
             dice_list.append(compute_dice(pred_masks[i], true_masks[i]))
         return (sum(dice_list) / len(dice_list)).item()
 
-    def train_epoch(self, epoch, args):
+    def train_epoch(self, epoch):
         epoch_loss = 0
         epoch_iou = 0
         self.model.train()
         sam_model = self.model
-        self.args.rank = -1
 
         tbar = tqdm(self.dataloaders)
 
@@ -490,35 +455,34 @@ class BaseTrainer:
         step_loss = 0
         epoch_dice = 0
         for step, data3D in enumerate(tbar):
+            if self.args.dry_run and (step > 2):
+                break
+
             try:
                 image3D, gt3D = data3D["image"], data3D["label"]
             except Exception as e:
                 print(f"Error processing batch at step {step}: {e}")
-            my_context = (
-                self.model.no_sync if self.args.rank != -1 and step % self.args.accumulation_steps != 0 else nullcontext
-            )
 
-            with my_context():
-                image3D = image3D.to(device)
-                gt3D = (gt3D != 0).to(device).type(torch.long)
-                with torch.amp.autocast("cuda"):
-                    image_embedding = sam_model.image_encoder(image3D)
+            image3D = image3D.to(device)
+            gt3D = (gt3D != 0).to(device).type(torch.long)
+            with torch.amp.autocast("cuda"):
+                image_embedding = sam_model.image_encoder(image3D)
 
-                    self.click_points = []
-                    self.click_labels = []
+                self.click_points = []
+                self.click_labels = []
 
-                    pred_list = []
+                pred_list = []
 
-                    prev_masks, loss, losses_dict = self.interaction_modified(sam_model, image_embedding, gt3D)
+                prev_masks, loss, losses_dict = self.interaction_modified(sam_model, image_embedding, gt3D)
 
-                epoch_loss += loss.item()
-                epoch_dice += self.get_dice_score(prev_masks, gt3D)
-                cur_loss = loss.item()
+            epoch_loss += loss.item()
+            epoch_dice += self.get_dice_score(prev_masks, gt3D)
+            cur_loss = loss.item()
 
-                loss /= self.args.accumulation_steps
+            loss /= self.args.accumulation_steps
 
-                self.scaler.scale(loss).backward()
-                save_batch_stats(losses_dict)
+            self.scaler.scale(loss).backward()
+            save_batch_stats(losses_dict)
 
             if step % self.args.accumulation_steps == 0 and step != 0:
                 self.scaler.step(self.optimizer)
@@ -569,11 +533,13 @@ class BaseTrainer:
         plt.close()
 
     def train(self):
+        if self.args.dry_run:
+            self.args.num_epochs = 1
         self.scaler = torch.amp.GradScaler("cuda")
         for epoch in range(self.start_epoch, self.args.num_epochs):
             print(f"Epoch: {epoch}/{self.args.num_epochs - 1}")
 
-            epoch_loss, epoch_iou, epoch_dice, pred_list = self.train_epoch(epoch, self.args.num_clicks)
+            epoch_loss, epoch_iou, epoch_dice, pred_list = self.train_epoch(epoch)
 
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()

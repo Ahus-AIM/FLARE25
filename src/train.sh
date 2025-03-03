@@ -1,1 +1,1 @@
-python src/train.py --batch_size 8 --model_type vit_b_ori_norm --num_workers 4 --accumulation_steps 1 --click_type challenge --checkpoint work_dir/mar3_skip_decoder_yes/sam_model_latest.pth --allow_partial_weight --task_name mar3 --num_clicks 2 --weight_decay 1e-5
+python src/train.py --batch_size 1 --model_type vit_b_ori_norm --num_workers 1 --accumulation_steps 1 --click_type challenge --checkpoint work_dir/test/this_file_does_not_exist.pth --allow_partial_weight --task_name test --num_clicks 2 --weight_decay 1e-5 --dry_run
