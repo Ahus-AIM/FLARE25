@@ -7,6 +7,7 @@ from .modeling import (
     MaskDecoder3D,
     NormalizedImageEncoderViT3D,
     NormalizedMaskDecoder3D,
+    NormalizedPromptEncoder3D,
     PromptEncoder3D,
     Sam3D,
 )
@@ -51,8 +52,10 @@ def _build_sam3D_ori(
     image_size = 128
     vit_patch_size = 16
     image_embedding_size = image_size // vit_patch_size
+
     mask_decoder_class = NormalizedMaskDecoder3D if normalized else MaskDecoder3D
     encoder_class = NormalizedImageEncoderViT3D if normalized else ImageEncoderViT3D
+    prompt_encoder_class = NormalizedPromptEncoder3D if normalized else PromptEncoder3D
     sam = Sam3D(
         image_encoder=encoder_class(
             depth=encoder_depth,
@@ -68,7 +71,7 @@ def _build_sam3D_ori(
             window_size=14,
             out_chans=prompt_embed_dim,
         ),
-        prompt_encoder=PromptEncoder3D(
+        prompt_encoder=prompt_encoder_class(
             embed_dim=prompt_embed_dim,
             image_embedding_size=(
                 image_embedding_size,

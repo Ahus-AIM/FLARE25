@@ -364,12 +364,11 @@ class NormalizedMaskDecoder3D(nn.Module):
 
         self.output_upscaling = nn.Sequential(
             nn.ConvTranspose3d(transformer_dim, transformer_dim // 4, kernel_size=2, stride=2),
-            # LayerNorm3d(
-            #     transformer_dim // 4
-            # ),  # NOTE how strict should we be on the "nGPT" architecture? It does not actually concern convolutions
+            LayerNorm3d(
+                transformer_dim // 4
+            ),  # NOTE how strict should we be on the "nGPT" architecture? It does not actually concern convolutions
             activation(),
             nn.ConvTranspose3d(transformer_dim // 4, transformer_dim // 8, kernel_size=2, stride=2),
-            # activation(), # NOTE removed
         )
         self.output_hypernetworks_mlps = nn.ModuleList(
             [MLP(transformer_dim, transformer_dim, transformer_dim // 8, 3) for i in range(self.num_mask_tokens)]
@@ -462,7 +461,7 @@ class NormalizedMaskDecoder3D(nn.Module):
         # Generate mask quality predictions
         iou_pred = self.iou_prediction_head(iou_token_out)
 
-        return masks, iou_pred
+        return masks - 4, iou_pred
 
     def normalize_weights(self):
         self.iou_token.weight.data.copy_(normalize(self.iou_token.weight.data, dim=-1))
