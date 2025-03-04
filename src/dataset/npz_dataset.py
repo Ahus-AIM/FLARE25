@@ -3,8 +3,6 @@ from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import torch
-import torchio as tio
-from prefetch_generator import BackgroundGenerator
 from torch.utils.data import DataLoader, Dataset
 
 
@@ -40,32 +38,85 @@ class NPZDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, np.ndarray]:
         file_path: str = self.file_paths[idx]
-        data: np.lib.npyio.NpzFile = np.load(file_path)
+        data: np.lib.npyio.NpzFile = np.load(file_path, mmap_mode="r")
 
         unique_labels = np.unique(data["gts"].astype(np.uint16))
         unique_labels = np.sort(unique_labels)[1:]
         if not len(unique_labels):
             return self.__getitem__(np.random.randint(len(self)))
+
         selected_label = np.random.choice(unique_labels)
-        labeldata = data["gts"] == selected_label
+        labeldata = torch.tensor(data["gts"] == selected_label).long()
+        imgdata = torch.tensor(data["imgs"]).float()
 
-        subject = tio.Subject(
-            image=tio.ScalarImage(tensor=torch.tensor(data["imgs"]).unsqueeze(0)),
-            label=tio.LabelMap(tensor=torch.tensor(labeldata.astype(np.uint16)).unsqueeze(0)),
-        )  # NOTE: spacing is currently not returned
+        # if labeldata.sum() < 100:
+        #     return self.__getitem__(np.random.randint(len(self)))
 
+        rand_seed = np.random.randint(0, 2**32)
         if self.transform:
-            subject = self.transform(subject)
+            labeldata = self.transform(labeldata, rand_seed).unsqueeze(0)
+            imgdata = self.transform(imgdata, rand_seed).unsqueeze(0)
 
         return {
-            "image": subject.image.data.clone().detach(),
-            "label": subject.label.data.clone().detach(),
+            "image": imgdata,
+            "label": labeldata,
+            "boxes": self.get_bboxes_3D(labeldata),
         }
 
+    def get_bbox_2D(self, gt2D):
+        # https://github.com/JunMa11/CVPR-MedSegFMCompetition/blob/f9ef0731ddbf05b3f1a1399ab4803511168b1e93/get_boxes.py#L44C1-L44C32
+        y_indices, x_indices = np.where(gt2D != 0)
+        x_min, x_max = np.min(x_indices), np.max(x_indices)
+        y_min, y_max = np.min(y_indices), np.max(y_indices)
+        # add perturbation to bounding box coordinates
+        H, W = gt2D.shape
+        bbox_shift = np.random.randint(0, 6, 1)[0]
+        scale_y, scale_x = gt2D.shape
+        bbox_shift_x = int(bbox_shift * scale_x / 256)
+        bbox_shift_y = int(bbox_shift * scale_y / 256)
 
-class Union_Dataloader(tio.SubjectsLoader):
-    def __iter__(self):
-        return BackgroundGenerator(super().__iter__())
+        x_min = max(0, x_min - bbox_shift_x)
+        x_max = min(W - 1, x_max + bbox_shift_x)
+        y_min = max(0, y_min - bbox_shift_y)
+        y_max = min(H - 1, y_max + bbox_shift_y)
+        boxes = np.array([x_min, y_min, x_max, y_max])
+        return boxes
+
+    def get_bboxes_3D(self, gt3D):
+        # https://github.com/JunMa11/CVPR-MedSegFMCompetition/blob/f9ef0731ddbf05b3f1a1399ab4803511168b1e93/get_boxes.py#L66
+
+        corners_tensor = torch.zeros((2, 3), dtype=torch.float32).to(gt3D.device)
+        D, H, W = gt3D.shape[-3:]
+
+        batch_item = gt3D[0]
+
+        z_indices, y_indices, x_indices = np.where(batch_item.cpu() != 0)
+
+        if not len(z_indices):
+            print("WARNING: No positive elements in labels file, setting box corners to zero.")
+            corners_tensor[0] = 0.0
+            corners_tensor[1] = gt3D.shape[-3:] - 1  # NOTE what to do here?
+
+        z_min, z_max = np.min(z_indices), np.max(z_indices)
+        z_middle = z_indices[len(z_indices) // 2]
+
+        gt_mid = batch_item[z_middle].cpu()
+
+        box_2d = self.get_bbox_2D(gt_mid)
+        x_min, y_min, x_max, y_max = box_2d
+
+        assert z_min == max(0, z_min)
+        assert z_max == min(D - 1, z_max)
+
+        corners_tensor[0, 0] = z_min
+        corners_tensor[0, 1] = y_min
+        corners_tensor[0, 2] = x_min
+
+        corners_tensor[1, 0] = z_max
+        corners_tensor[1, 1] = y_max
+        corners_tensor[1, 2] = x_max
+
+        return corners_tensor
 
 
 if __name__ == "__main__":
