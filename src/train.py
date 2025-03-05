@@ -290,17 +290,17 @@ class BaseTrainer:
     def interaction(self, sam_model, image_embedding, gt3D, boxes):
         losses_dict = {}
 
-        prev_masks = torch.zeros_like(gt3D).to(gt3D.device)
-        low_res_masks = F.interpolate(
-            prev_masks.float(),
-            size=(self.args.img_size // 4, self.args.img_size // 4, self.args.img_size // 4),
-        )
+        # prev_masks = torch.zeros_like(gt3D).to(gt3D.device)
+        # low_res_masks = F.interpolate(
+        #     prev_masks.float(),
+        #     size=(self.args.img_size // 4, self.args.img_size // 4, self.args.img_size // 4),
+        # )
 
         low_res_masks, prev_masks = batch_forward(
             sam_model,
             image_embedding,
             gt3D,
-            low_res_masks,
+            None,
             points=None,
             boxes=boxes,
         )
