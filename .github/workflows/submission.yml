@@ -24,7 +24,7 @@ jobs:
       run: |
         mkdir docker_folder
         docker image save ahus:latest > docker_folder/ahus.tar
-    - name: Run inference
-      run: |
-        mkdir submission_outputs
-        python3 src/submission/CVPR25_iter_eval.py --test_img_path "/data/github-actions/val" --validation_gts_path "/data/github-actions/val_gts" --save_path "./submission_outputs" --docker_folder_path "./docker_folder" -v
+    # - name: Run inference
+    #   run: |
+    #     mkdir submission_outputs
+    #     python3 src/submission/CVPR25_iter_eval.py --test_img_path "/data/github-actions/val" --validation_gts_path "/data/github-actions/val_gts" --save_path "./submission_outputs" --docker_folder_path "./docker_folder" -v

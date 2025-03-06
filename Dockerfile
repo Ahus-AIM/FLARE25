@@ -14,7 +14,7 @@ RUN python3 -m pip install -r requirements.txt
 
 COPY src/model/ /ahus/model/
 COPY src/submission/sammed_predict.py /ahus/
-COPY work_dir/test/sam_model_latest.pth /workspace/weights.pth
+# COPY work_dir/test/sam_model_latest.pth /workspace/weights.pth
 COPY src/submission/predict.sh /ahus/
 
 CMD ["sleep", "infinity"]
