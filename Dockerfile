@@ -1,15 +1,20 @@
 FROM python:3.12
 
-RUN mkdir /cvpr
+RUN mkdir /ahus
+RUN mkdir /ahus/model
+RUN mkdir /ahus/utils
 RUN mkdir /workspace
 RUN mkdir /workspace/inputs
 RUN mkdir /workspace/outputs
-WORKDIR /cvpr
-COPY submission_files/requirements.txt /cvpr/requirements.txt
+WORKDIR /ahus
+COPY src/submission/requirements.txt /ahus/requirements.txt
 
 RUN python3 -m pip install --upgrade pip
 RUN python3 -m pip install -r requirements.txt
 
-COPY submission_files/* /cvpr/
+COPY src/model/ /ahus/model/
+COPY src/submission/sammed_predict.py /ahus/
+# COPY work_dir/test/sam_model_latest.pth /workspace/weights.pth
+COPY src/submission/predict.sh /ahus/
 
 CMD ["sleep", "infinity"]

@@ -19,12 +19,12 @@ jobs:
         python3 -m pip install connected-components-3d
         python3 -m pip install cucim-cu12
     - name: Build docker
-      run: docker build -t cvpr .
+      run: docker build -t ahus .
     - name: Store docker image
       run: |
         mkdir docker_folder
-        docker image save cvpr:latest > docker_folder/cvpr.tar
-    - name: Run inference
-      run: |
-        mkdir submission_outputs
-        python3 CVPR25_iter_eval.py --test_img_path "/data/github-actions/val" --validation_gts_path "/data/github-actions/val_gts" --save_path "./submission_outputs" --docker_folder_path "./docker_folder" -v
+        docker image save ahus:latest > docker_folder/ahus.tar
+    # - name: Run inference
+    #   run: |
+    #     mkdir submission_outputs
+    #     python3 src/submission/CVPR25_iter_eval.py --test_img_path "/data/github-actions/val" --validation_gts_path "/data/github-actions/val_gts" --save_path "./submission_outputs" --docker_folder_path "./docker_folder" -v

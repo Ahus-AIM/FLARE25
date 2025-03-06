@@ -1,0 +1,6 @@
+# Ignore everything by default
+**
+
+# Allow only required files and directories
+!src/submission/
+!src/model/
