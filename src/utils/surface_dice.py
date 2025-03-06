@@ -1,12 +1,7 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Fri Apr 15 13:01:08 2022
-
-@author: 12593
-"""
+# noqa
 
 import numpy as np
-import scipy.ndimage
+import scipy.ndimage  # type: ignore
 
 # neighbour_code_to_normals is a lookup table.
 # For every binary neighbour code
@@ -358,9 +353,6 @@ def compute_surface_distances(mask_gt, mask_pred, spacing_mm):
     idx_nonzero_2 = np.nonzero(proj_2)[0]
     bbox_min[2] = np.min(idx_nonzero_2)
     bbox_max[2] = np.max(idx_nonzero_2)
-
-    #  print("bounding box min = {}".format(bbox_min))
-    #  print("bounding box max = {}".format(bbox_max))
 
     # crop the processing subvolume.
     # we need to zeropad the cropped region with 1 voxel at the lower,

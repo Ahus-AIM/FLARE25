@@ -12,7 +12,6 @@ import argparse
 import nibabel as nib
 import torch
 import torch.multiprocessing as mp
-import torch.nn.functional as F
 from monai.losses import DiceCELoss
 from torch.backends import cudnn
 from tqdm import tqdm
@@ -20,9 +19,10 @@ from tqdm import tqdm
 from dataset.npz_dataset import NPZDataset
 from model.build_sam3D import sam_model_registry3D
 from transform.transform import Compose, CropOrPad, Flip
-from utils.click_method import get_clicks_for_class_error, get_next_click3D_torch_2
+from utils.decode import decode_batch
+from utils.interact import interact
 
-# %% set up parser
+# set up parser
 parser = argparse.ArgumentParser()
 parser.add_argument("--task_name", type=str, default="union_train")
 parser.add_argument("--click_type", type=str, default="random")
@@ -62,8 +62,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(i) for i in args.gpu_ids])
 logger = logging.getLogger(__name__)
 LOG_OUT_DIR = join(args.work_dir, args.task_name)
 click_methods = {
-    "random": get_next_click3D_torch_2,
-    "challenge": get_clicks_for_class_error,
+    "challenge": interact,
 }
 MODEL_SAVE_PATH = join(args.work_dir, args.task_name)
 os.makedirs(MODEL_SAVE_PATH, exist_ok=True)
@@ -129,23 +128,6 @@ def get_dataloaders_npz(args):
     )
 
     return train_dataloader
-
-
-def batch_forward(sam_model, image_embedding, gt3D, low_res_masks, points=None, boxes=None):
-    sparse_embeddings, dense_embeddings = sam_model.prompt_encoder(
-        points=points,
-        boxes=boxes,
-        masks=low_res_masks,
-    )
-    low_res_masks, iou_predictions = sam_model.mask_decoder(
-        image_embeddings=image_embedding.to(device),  # (B, 256, 64, 64)
-        image_pe=sam_model.prompt_encoder.get_dense_pe(),  # (1, 256, 64, 64)
-        sparse_prompt_embeddings=sparse_embeddings,  # (B, 2, 256)
-        dense_prompt_embeddings=dense_embeddings,  # (B, 256, 64, 64)
-        multimask_output=False,
-    )
-    prev_masks = F.interpolate(low_res_masks, size=gt3D.shape[-3:], mode="trilinear", align_corners=False)
-    return low_res_masks, prev_masks
 
 
 class BaseTrainer:
@@ -273,8 +255,9 @@ class BaseTrainer:
             join(MODEL_SAVE_PATH, f"sam_model_{describe}.pth"),
         )
 
-    def get_points(self, prev_masks, gt3D):
-        batch_points, batch_labels = click_methods[self.args.click_type](torch.sigmoid(prev_masks), gt3D)
+    def get_points(self, prev_masks, gt3D, threshold=0.5):
+        prediction = (torch.sigmoid(prev_masks) > threshold).long()
+        batch_points, batch_labels = click_methods[self.args.click_type](prediction, gt3D)
 
         if len(batch_points) != prev_masks.shape[0]:
             return None, None
@@ -290,13 +273,7 @@ class BaseTrainer:
     def interaction(self, sam_model, image_embedding, gt3D, boxes):
         losses_dict = {}
 
-        # prev_masks = torch.zeros_like(gt3D).to(gt3D.device)
-        # low_res_masks = F.interpolate(
-        #     prev_masks.float(),
-        #     size=(self.args.img_size // 4, self.args.img_size // 4, self.args.img_size // 4),
-        # )
-
-        low_res_masks, prev_masks = batch_forward(
+        low_res_masks, prev_masks = decode_batch(
             sam_model,
             image_embedding,
             gt3D,
@@ -309,12 +286,12 @@ class BaseTrainer:
         losses_dict["box"] = return_loss.item()
 
         for num_click in range(self.args.num_clicks):
-            points_input, labels_input = self.get_points(prev_masks, gt3D)
+            points_input, labels_input = self.get_points(prev_masks, gt3D, threshold=0.5)
             if points_input is None:
                 return_loss = self.seg_loss(prev_masks, gt3D)
                 return prev_masks, return_loss, {}
 
-            low_res_masks, prev_masks = batch_forward(
+            low_res_masks, prev_masks = decode_batch(
                 sam_model,
                 image_embedding,
                 gt3D,
