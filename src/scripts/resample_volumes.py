@@ -67,7 +67,7 @@ def resample_volume(npz, full_path, image_size=128, save_nii_gz=False):
         nib.save(nii_img, img_path)
         nib.save(nii_lbl, label_path)
     else:
-        np.savez(
+        np.savez_compressed(
             full_path,
             imgs=resampled_image.numpy(),
             gts=resampled_label.numpy(),
