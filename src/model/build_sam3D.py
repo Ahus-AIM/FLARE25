@@ -44,10 +44,10 @@ def build_vit_norm(checkpoint=None):
         num_heads=12,
         patch_size=16,
         qkv_bias=True,
-        out_chans=256,
+        out_chans=384,
     )
     decoder = NormalizedDecoder3D(
-        embed_dim=256,
+        embed_dim=384,
         depth=2,
         num_heads=8,
         out_chans=1,
