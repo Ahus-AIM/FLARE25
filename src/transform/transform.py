@@ -11,15 +11,25 @@ class CropOrPad(torch.nn.Module):
 
     def forward(self, tensor, seed):
         # ensure the input has shape target_shape in the last 3 dimensions
+        random.seed(seed)
         input_shape = tensor.shape[-3:]
         if input_shape == self.target_shape:
             return tensor
         if input_shape[0] < self.target_shape[0]:
-            tensor = F.pad(tensor, (0, 0, 0, 0, 0, self.target_shape[0] - input_shape[0]))
+            padding = self.target_shape[0] - input_shape[0]
+            padding_left = random.randint(0, padding)
+            padding_right = padding - padding_left
+            tensor = F.pad(tensor, (0, 0, 0, 0, padding_left, padding_right))
         if input_shape[1] < self.target_shape[1]:
-            tensor = F.pad(tensor, (0, 0, 0, self.target_shape[1] - input_shape[1], 0, 0))
+            padding = self.target_shape[1] - input_shape[1]
+            padding_left = random.randint(0, padding)
+            padding_right = padding - padding_left
+            tensor = F.pad(tensor, (0, 0, padding_left, padding_right, 0, 0))
         if input_shape[2] < self.target_shape[2]:
-            tensor = F.pad(tensor, (0, self.target_shape[2] - input_shape[2], 0, 0, 0, 0))
+            padding = self.target_shape[2] - input_shape[2]
+            padding_left = random.randint(0, padding)
+            padding_right = padding - padding_left
+            tensor = F.pad(tensor, (padding_left, padding_right, 0, 0, 0, 0))
 
         return tensor
 
