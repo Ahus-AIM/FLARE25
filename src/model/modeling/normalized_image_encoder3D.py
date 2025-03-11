@@ -158,7 +158,7 @@ class NormalizedImageEncoderViT3D(nn.Module):
 
         x = self.neck(x.permute(0, 4, 1, 2, 3))
 
-        x = normalize(x, dim=-1)
+        x = normalize(x, dim=1)
 
         return x
 

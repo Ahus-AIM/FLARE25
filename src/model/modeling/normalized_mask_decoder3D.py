@@ -7,7 +7,7 @@ from torch.nn import functional as F
 
 
 def normalize(x: Tensor, dim: int = -1) -> Tensor:
-    res: torch.Tensor = x / x.norm(p=2, dim=dim, keepdim=True).clamp(min=1e-3)
+    res: torch.Tensor = x / x.norm(p=2, dim=dim, keepdim=True).clamp(min=1e-6)
     return res
 
 
@@ -303,14 +303,14 @@ class Attention(nn.Module):
         attn_out = attn @ v
         attn_out = self._recombine_heads(attn_out)
         attn_out = self.out_proj(attn_out)
+        attn_out = normalize(attn_out, dim=-1)
 
-        out = normalize(attn_out, dim=-1)
         if residual_stream is not None:
             lr = self.attn_alpha * (self.attn_alpha_init_value / self.attn_alpha_init_scaling)
             lr = torch.abs(lr)
-            out = normalize(residual_stream + lr * (attn_out - residual_stream), dim=-1)
+            attn_out = normalize(residual_stream + lr * (attn_out - residual_stream), dim=-1)
 
-        return out
+        return attn_out
 
     def normalize_weights(self):
         self.q_proj.weight.data.copy_(normalize(self.q_proj.weight.data, dim=1))
