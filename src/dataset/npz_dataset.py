@@ -8,7 +8,13 @@ from torch.utils.data import DataLoader, Dataset
 
 class NPZDataset(Dataset):
     def __init__(
-        self, base_dir: str, transform: Optional[Callable] = None, data_suffix: str = "_resampled.npz", **kwargs: Any
+        self,
+        base_dir: str,
+        transform: Optional[Callable] = None,
+        data_suffix: str = "_resampled.npz",
+        return_only_image: bool = False,
+        load_n_first: Optional[int] = None,
+        **kwargs: Any,
     ) -> None:
         """
         Args:
@@ -22,6 +28,9 @@ class NPZDataset(Dataset):
         self.transform: Optional[Callable] = transform
         self.data_suffix: str = data_suffix
         self.file_paths: List[str] = self._gather_data()
+        if load_n_first is not None:
+            self.file_paths = self.file_paths[:load_n_first]
+        self.return_only_image: bool = return_only_image
         self.kwargs: Dict[str, Any] = kwargs
 
     def _gather_data(self) -> List[str]:
@@ -31,6 +40,8 @@ class NPZDataset(Dataset):
             for file in files:
                 if file.endswith(self.data_suffix):
                     file_paths.append(os.path.join(root, file))
+        np.random.seed(2025)
+        np.random.shuffle(file_paths)
         return file_paths
 
     def __len__(self) -> int:
@@ -56,6 +67,11 @@ class NPZDataset(Dataset):
         if self.transform:
             labeldata = self.transform(labeldata, rand_seed).unsqueeze(0)
             imgdata = self.transform(imgdata, rand_seed).unsqueeze(0)
+
+        if self.return_only_image:
+            return {
+                "image": imgdata,
+            }
 
         return {
             "image": imgdata,

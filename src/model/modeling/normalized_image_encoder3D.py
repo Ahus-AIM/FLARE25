@@ -158,7 +158,7 @@ class NormalizedImageEncoderViT3D(nn.Module):
 
         x = self.neck(x.permute(0, 4, 1, 2, 3))
 
-        x = normalize(x, dim=-1)
+        x = normalize(x, dim=1)
 
         return x
 
@@ -261,7 +261,7 @@ class Attention(nn.Module):
         x = (attn @ v).view(B, self.num_heads, D, H, W, -1).permute(0, 2, 3, 4, 1, 5).reshape(B, D, H, W, -1)
         attn_out = self.proj(x)
 
-        out = normalize(attn_out, dim=-1)
+        attn_out = normalize(attn_out, dim=-1)
 
         lr = self.attn_alpha * (self.attn_alpha_init_value / self.attn_alpha_init_scaling)
         lr = torch.abs(lr)

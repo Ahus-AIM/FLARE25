@@ -5,8 +5,10 @@ import torch
 from .modeling import (
     ImageEncoderViT3D,
     MaskDecoder3D,
+    NormalizedDecoder3D,
     NormalizedImageEncoderViT3D,
     NormalizedMaskDecoder3D,
+    NormalizedMaskedAutoencoder3D,
     PromptEncoder3D,
     Sam3D,
 )
@@ -33,9 +35,33 @@ def build_sam3D_vit_b_ori_norm(checkpoint=None):
     )
 
 
+def build_vit_norm(checkpoint=None):
+    encoder = NormalizedImageEncoderViT3D(
+        depth=12,
+        embed_dim=768,
+        img_size=128,
+        mlp_ratio=4,
+        num_heads=12,
+        patch_size=16,
+        qkv_bias=True,
+        out_chans=384,
+    )
+    decoder = NormalizedDecoder3D(
+        embed_dim=384,
+        depth=2,
+        num_heads=8,
+        out_chans=1,
+        input_size=8,
+    )
+    autoencoder = NormalizedMaskedAutoencoder3D(encoder, decoder)
+    autoencoder.eval()
+    return autoencoder
+
+
 sam_model_registry3D = {
     "vit_b_ori": build_sam3D_vit_b_ori,
     "vit_b_ori_norm": build_sam3D_vit_b_ori_norm,
+    "vit_ae_norm": build_vit_norm,
 }
 
 
