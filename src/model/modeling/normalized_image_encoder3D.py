@@ -4,10 +4,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-
-def normalize(x: Tensor, dim: int = -1) -> Tensor:
-    res: Tensor = x / x.norm(p=2, dim=dim, keepdim=True).clamp(min=1e-3)
-    return res
+from .common import NormLayer3D, normalize
 
 
 class MLPBlock(nn.Module):
@@ -141,24 +138,24 @@ class NormalizedImageEncoderViT3D(nn.Module):
             nn.Conv3d(
                 embed_dim,
                 out_chans,
-                kernel_size=3,
-                padding=1,
+                kernel_size=1,
+                # padding=1,
                 bias=False,
             ),
+            NormLayer3D(),
         )
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.patch_embed(x)
-        if self.pos_embed is not None:
-            x = x + self.pos_embed
+        # if self.pos_embed is not None:
+        #     x = x + self.pos_embed
 
-        x = normalize(x)
-        for blk in self.blocks:
-            x = blk(x)
+        # x = normalize(x)
+        # for blk in self.blocks:
+        #     x = blk(x)
 
+        # x = self.neck(x.permute(0, 4, 1, 2, 3))
         x = self.neck(x.permute(0, 4, 1, 2, 3))
-
-        x = normalize(x, dim=1)
 
         return x
 
@@ -298,7 +295,20 @@ class PatchEmbed3D(nn.Module):
         """
         super().__init__()
 
-        self.proj = nn.Conv3d(in_chans, embed_dim, kernel_size=kernel_size, stride=stride, padding=padding, bias=False)
+        # self.proj = nn.Conv3d(in_chans, embed_dim, kernel_size=kernel_size, stride=stride, padding=padding, bias=False)
+        activation = nn.GELU
+        self.proj = nn.Sequential(
+            nn.Conv3d(1, 16, kernel_size=2, stride=2),
+            activation(),
+            NormLayer3D(),
+            nn.Conv3d(16, 128, kernel_size=2, stride=2),
+            activation(),
+            NormLayer3D(),
+            nn.Conv3d(128, embed_dim, kernel_size=2, stride=2),
+            # activation(),
+            # NormLayer3D(),
+            # nn.Conv3d(128, embed_dim, kernel_size=2, stride=2),
+        )
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.proj(x)
