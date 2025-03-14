@@ -32,6 +32,24 @@ def resample_volume(npz, full_path, image_size=128, save_nii_gz=False):
     # Load image and label volumes
     image = torch.tensor(npz["imgs"], dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # (1, 1, D, H, W)
     label = torch.tensor(npz["gts"], dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # (1, 1, D, H, W)
+
+    all_dims = list(range(len(image.shape)))
+    idxs = []
+    for i in range(3):
+        curr_dims = all_dims.copy()
+        curr_dims.pop(-(i + 1))
+        curr_sum = image.sum(dim=curr_dims)
+        if curr_sum.sum() == 0:
+            first_non_zero = 0
+            last_non_zero = curr_sum.shape[0]
+        else:
+            first_non_zero = torch.nonzero(curr_sum).squeeze(1)[0]
+            last_non_zero = torch.nonzero(curr_sum).squeeze(1)[-1] + 1
+        idxs.append((first_non_zero, last_non_zero))
+    idxs = idxs[::-1]
+    image = image[..., idxs[0][0] : idxs[0][1], idxs[1][0] : idxs[1][1], idxs[2][0] : idxs[2][1]]
+    label = label[..., idxs[0][0] : idxs[0][1], idxs[1][0] : idxs[1][1], idxs[2][0] : idxs[2][1]]
+
     original_spacing = torch.tensor(npz["spacing"], dtype=torch.float32)
     if any(original_spacing <= 0):
         print(f"Skipping {full_path} due to invalid spacing: {original_spacing}")
