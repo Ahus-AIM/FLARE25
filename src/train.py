@@ -32,7 +32,7 @@ parser.add_argument("--device", type=str, default="cuda")
 parser.add_argument("--work_dir", type=str, default="work_dir")
 parser.add_argument("--num_clicks", type=int, default=5)
 parser.add_argument("--last_click_loss_weight", type=int, default=1)
-parser.add_argument("--base_dir", type=str, default="../drive_data/3D_train_npz_random_10percent_16G")
+parser.add_argument("--base_dir", type=str, default="/data/drive_data/3D_train_npz_random_10percent_16G")
 parser.add_argument("--log_every_n_steps", type=int, default=20)
 parser.add_argument("--dry_run", action="store_true", default=False)
 
