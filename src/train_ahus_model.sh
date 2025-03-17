@@ -1,0 +1,1 @@
+python src/train_ahus_model.py --batch_size 4 --model_type ahus_model --num_workers 8 --accumulation_steps 2 --click_type challenge --task_name ahus_model_17mar --num_clicks 2 --checkpoint work_dir/ahus_model/sam_model_44_step_dice:0.9522221088409424_best.pth

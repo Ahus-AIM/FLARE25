@@ -4,30 +4,36 @@ import numpy as np
 import torch
 from torch import nn
 
+from .common import NormLayer3D
 
-class LayerNorm3d(nn.Module):
-    def __init__(self, num_channels: int, eps: float = 1e-6) -> None:
+
+class DownscaleBlock3D(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int) -> None:
         super().__init__()
-        self.weight = nn.Parameter(torch.ones(num_channels))
-        self.bias = nn.Parameter(torch.zeros(num_channels))
-        self.eps = eps
+        self.block = nn.Sequential(
+            nn.Conv3d(
+                in_channels,
+                out_channels,
+                kernel_size=2,
+                stride=2,
+            ),
+            NormLayer3D(),
+            nn.GELU(),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        u = x.mean(1, keepdim=True)
-        s = (x - u).pow(2).mean(1, keepdim=True)
-        x = (x - u) / torch.sqrt(s + self.eps)
-        x = self.weight[:, None, None, None] * x + self.bias[:, None, None, None]
-        return x
+        return self.block(x)
 
 
 class PromptEncoder3D(nn.Module):
     def __init__(
         self,
         embed_dim: int,
+        prev_mask_downscaling_factor: int,
         image_embedding_size: Tuple[int, int, int],
         input_image_size: Tuple[int, int, int],
-        mask_in_chans: int,
-        activation: Type[nn.Module] = nn.GELU,
+        activation: Type[nn.Module],
+        init_filters: int,
     ) -> None:
         """
         Encodes prompts for input to SAM's mask decoder.
@@ -38,8 +44,6 @@ class PromptEncoder3D(nn.Module):
             image embedding, as (H, W).
           input_image_size (int): The padded size of the image as input
             to the image encoder, as (H, W).
-          mask_in_chans (int): The number of hidden channels used for
-            encoding input masks.
           activation (nn.Module): The activation to use when encoding
             input masks.
         """
@@ -57,33 +61,18 @@ class PromptEncoder3D(nn.Module):
         corner_embeddings = [nn.Embedding(1, embed_dim) for i in range(self.num_corner_embeddings)]
         self.corner_embeddings = nn.ModuleList(corner_embeddings)
 
-        self.not_a_point_embed = nn.Embedding(1, embed_dim)
+        downscale_layers = torch.log2(torch.tensor(prev_mask_downscaling_factor)).int().item()
 
-        self.mask_input_size = (
-            image_embedding_size[0],
-            image_embedding_size[1],
-            image_embedding_size[2],
-        )
-        self.mask_downscaling = nn.Sequential(
-            nn.Conv3d(1, mask_in_chans // 4, kernel_size=2, stride=2),
-            LayerNorm3d(mask_in_chans // 4),
-            activation(),
-            nn.Conv3d(mask_in_chans // 4, mask_in_chans, kernel_size=2, stride=2),
-            LayerNorm3d(mask_in_chans),
-            activation(),
-            nn.Conv3d(mask_in_chans, embed_dim, kernel_size=1),
-        )
+        self.mask_downscaling = []
+        num_channels = [1] + [init_filters * 2**i for i in range(downscale_layers)]
+        for i in range(downscale_layers):
+            self.mask_downscaling.append(DownscaleBlock3D(num_channels[i], num_channels[i + 1]))
+        self.mask_downscaling.append(nn.Conv3d(num_channels[-1], embed_dim, kernel_size=1))
+        self.mask_downscaling = nn.Sequential(*self.mask_downscaling)
+
         self.no_mask_embed = nn.Embedding(1, embed_dim)
 
     def get_dense_pe(self) -> torch.Tensor:
-        """
-        Returns the positional encoding used to encode point prompts,
-        applied to a dense set of points the shape of the image encoding.
-
-        Returns:
-          torch.Tensor: Positional encoding with shape
-            1x(embed_dim)x(embedding_h)x(embedding_w)
-        """
         return self.pe_layer(self.image_embedding_size).unsqueeze(0)  # 1xXxYxZ
 
     def _embed_points(
@@ -92,7 +81,6 @@ class PromptEncoder3D(nn.Module):
         labels: torch.Tensor,
         pad: bool,
     ) -> torch.Tensor:
-        """Embeds point prompts."""
         points = points + 0.5  # Shift to center of pixel
         if pad:
             padding_point = torch.zeros((points.shape[0], 1, 3), device=points.device)
@@ -100,15 +88,11 @@ class PromptEncoder3D(nn.Module):
             points = torch.cat([points, padding_point], dim=1)
             labels = torch.cat([labels, padding_label], dim=1)
         point_embedding = self.pe_layer.forward_with_coords(points, self.input_image_size)
-        point_embedding[labels == -1] = 0.0
-        point_embedding[labels == -1] += self.not_a_point_embed.weight
         point_embedding[labels == 0] += self.point_embeddings[0].weight
         point_embedding[labels == 1] += self.point_embeddings[1].weight
         return point_embedding
 
     def _embed_boxes(self, boxes: torch.Tensor) -> torch.Tensor:
-        """Embeds box prompts."""
-        # NOTE this does not seem to be correctly implemeted in the original version SAM-Med3D // Elias
         boxes = boxes + 0.5  # Shift to center of pixel
         assert boxes.shape[2] == 3, f"Expected boxes to have shape Bx2x3, got {boxes.shape}"
         assert boxes.shape[1] == 2, f"Expected boxes to have shape Bx2x3, got {boxes.shape}"
@@ -118,7 +102,6 @@ class PromptEncoder3D(nn.Module):
         return corner_embedding
 
     def _embed_masks(self, masks: torch.Tensor) -> torch.Tensor:
-        """Embeds mask inputs."""
         mask_embedding = self.mask_downscaling(masks)
         return mask_embedding
 
@@ -179,13 +162,7 @@ class PromptEncoder3D(nn.Module):
         if masks is not None:
             dense_embeddings = self._embed_masks(masks)
         else:
-            dense_embeddings = self.no_mask_embed.weight.reshape(1, -1, 1, 1, 1).expand(
-                bs,
-                -1,
-                self.image_embedding_size[0],
-                self.image_embedding_size[1],
-                self.image_embedding_size[2],
-            )
+            dense_embeddings = torch.tensor(0.0, device=self._get_device())
 
         return sparse_embeddings, dense_embeddings
 
@@ -211,7 +188,9 @@ class PositionEmbeddingRandom3D(nn.Module):
         coords = coords @ self.positional_encoding_gaussian_matrix
         coords = 2 * np.pi * coords
         # outputs d_1 x ... x d_n x C shape
-        return torch.cat([torch.sin(coords), torch.cos(coords), torch.sin(coords)], dim=-1)
+        pe_encoding = torch.cat([torch.sin(coords), torch.cos(coords), torch.sin(coords)], dim=-1)
+        pe_encoding = torch.cat([pe_encoding, torch.zeros_like(pe_encoding[..., :2])], dim=-1)
+        return pe_encoding
 
     def forward(self, size: Tuple[int, int, int]) -> torch.Tensor:
         """Generate positional encoding for a grid of the specified size."""

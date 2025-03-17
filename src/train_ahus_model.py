@@ -17,9 +17,9 @@ from torch.backends import cudnn
 from tqdm import tqdm
 
 from dataset.npz_dataset import NPZDataset
-from model.build_sam3D import sam_model_registry3D
+from model.build_ahus_model import model_registry
 from transform.transform import Compose, CropOrPad, Flip
-from utils.decode import decode_batch
+from utils.decode import decoder_forward
 from utils.interact import interact
 
 # set up parser
@@ -33,8 +33,10 @@ parser.add_argument("--work_dir", type=str, default="work_dir")
 parser.add_argument("--num_clicks", type=int, default=5)
 parser.add_argument("--last_click_loss_weight", type=int, default=1)
 parser.add_argument("--base_dir", type=str, default="/data/drive_data/3D_train_npz_random_10percent_16G")
+parser.add_argument("--val_dir", type=str, default="/data/3D_val_npz")
 parser.add_argument("--log_every_n_steps", type=int, default=20)
 parser.add_argument("--dry_run", action="store_true", default=False)
+parser.add_argument("--load_encoder_vit_path", type=str, default="")
 
 # train
 parser.add_argument("--num_workers", type=int, default=24)
@@ -47,12 +49,12 @@ parser.add_argument("--allow_partial_weight", action="store_true", default=False
 parser.add_argument("--lr_scheduler", type=str, default="multisteplr")
 parser.add_argument("--step_size", type=list, default=[120, 180])
 parser.add_argument("--gamma", type=float, default=0.1)
-parser.add_argument("--num_epochs", type=int, default=200)
+parser.add_argument("--num_epochs", type=int, default=10_000)
 parser.add_argument("--img_size", type=int, default=128)
 parser.add_argument("--batch_size", type=int, default=12)
 parser.add_argument("--accumulation_steps", type=int, default=20)
 parser.add_argument("--lr", type=float, default=8e-4)
-parser.add_argument("--weight_decay", type=float, default=0.1)
+parser.add_argument("--weight_decay", type=float, default=0.0)
 parser.add_argument("--port", type=int, default=12361)
 
 args = parser.parse_args()
@@ -77,7 +79,7 @@ def save_batch_stats(losses_dict):
         LOGGING_DICT[key].append(value)
 
 
-def ma(arr, k=10):
+def ma(arr, k=100):
     res = []
     curr = np.mean(arr[:k])
     for i in range(len(arr)):
@@ -91,10 +93,22 @@ def ma(arr, k=10):
 
 def plot_batch_stats():
     for i, (key, value) in enumerate(LOGGING_DICT.items()):
+        if not key.startswith("val"):
+            continue
         plt.plot(ma(value), label=key, linewidth=0.5, c=f"C{i}")
         plt.grid(True)
     plt.legend()
-    plt.savefig(f"{LOG_OUT_DIR}/step_loss.png", dpi=300)
+    plt.yscale("log")
+    plt.savefig(f"{LOG_OUT_DIR}/val_step_loss.png", dpi=300)
+    plt.close()
+    for i, (key, value) in enumerate(LOGGING_DICT.items()):
+        if key.startswith("val"):
+            continue
+        plt.plot(ma(value), label=key, linewidth=0.5, c=f"C{i}")
+        plt.grid(True)
+    plt.legend()
+    plt.yscale("log")
+    plt.savefig(f"{LOG_OUT_DIR}/train_step_loss.png", dpi=300)
     plt.close()
 
 
@@ -108,8 +122,7 @@ def save_niigz(volume, save_path):
 
 
 def build_model(args):
-    sam_model = sam_model_registry3D[args.model_type](checkpoint=None).to(device)
-    return sam_model
+    return model_registry[args.model_type]().to(device)
 
 
 def get_dataloaders_npz(args):
@@ -124,17 +137,29 @@ def get_dataloaders_npz(args):
         shuffle=True,
         num_workers=args.num_workers,
         pin_memory=True,
-        prefetch_factor=2,
+        persistent_workers=True,
     )
 
-    return train_dataloader
+    val_dataset = NPZDataset(
+        base_dir=args.val_dir,
+        transform=Compose([CropOrPad((args.img_size, args.img_size, args.img_size))]),
+        load_n_first=500,
+    )
+    val_dataloader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=args.batch_size // 2,
+        shuffle=False,
+        num_workers=args.num_workers,
+        persistent_workers=True,
+    )
+
+    return train_dataloader, val_dataloader
 
 
 class BaseTrainer:
     def __init__(self, model, dataloaders, args):
-
         self.model = model
-        self.dataloaders = dataloaders
+        self.train_dataloader, self.val_dataloader = dataloaders
         self.args = args
         self.best_loss = np.inf
         self.best_dice = 0.0
@@ -142,6 +167,8 @@ class BaseTrainer:
         self.step_best_dice = 0.0
         self.losses = []
         self.dices = []
+        self.val_losses = []
+        self.val_dices = []
         self.ious = []
         self.set_loss_fn()
         self.set_optimizer()
@@ -149,10 +176,13 @@ class BaseTrainer:
         if args.resume:
             self.init_checkpoint(join(self.args.work_dir, self.args.task_name, "sam_model_latest.pth"))
         else:
-            self.init_checkpoint(self.args.checkpoint)
+            self.init_checkpoint(self.args.checkpoint, self.args.load_encoder_vit_path)
 
     def set_loss_fn(self):
-        self.seg_loss = DiceCELoss(sigmoid=True, squared_pred=True, reduction="mean", smooth_dr=1e-2, smooth_nr=1e-2)
+        self.seg_loss = DiceCELoss(
+            sigmoid=True, squared_pred=True, reduction="mean", smooth_dr=1e-5, smooth_nr=1e-5, lambda_ce=20.0
+        )
+        self.rec_loss = torch.nn.BCEWithLogitsLoss(reduction="none")
 
     def set_optimizer(self):
         sam_model = self.model
@@ -178,7 +208,7 @@ class BaseTrainer:
             ]
 
         param_groups = []
-        param_groups.extend(get_param_groups(sam_model.image_encoder, lr_scale=1.0))
+        param_groups.extend(get_param_groups(sam_model.segresnet, lr_scale=0.1))
         param_groups.extend(get_param_groups(sam_model.prompt_encoder, lr_scale=1.0))
         param_groups.extend(
             get_param_groups(
@@ -192,15 +222,14 @@ class BaseTrainer:
             param_groups, lr=self.args.lr, betas=(0.9, 0.999), weight_decay=self.args.weight_decay
         )
 
-        if self.args.model_type.endswith("norm"):
-            print("Registering weight normalization post hook")
+        print("Registering weight normalization post hook")
 
-            def normalize_hook(optimizer, *args, **kwargs):
-                for module in sam_model.modules():
-                    if hasattr(module, "normalize_weights"):
-                        module.normalize_weights()
+        def normalize_hook(optimizer, *args, **kwargs):
+            for module in sam_model.modules():
+                if hasattr(module, "normalize_weights"):
+                    module.normalize_weights()
 
-            self.optimizer.register_step_post_hook(normalize_hook)
+        self.optimizer.register_step_post_hook(normalize_hook)
 
     def set_lr_scheduler(self):
         if self.args.lr_scheduler == "multisteplr":
@@ -214,7 +243,7 @@ class BaseTrainer:
         else:
             self.lr_scheduler = torch.optim.lr_scheduler.LinearLR(self.optimizer, 0.1)
 
-    def init_checkpoint(self, ckp_path):
+    def init_checkpoint(self, ckp_path, load_encoder_vit_path=None):
         last_ckpt = None
         if os.path.exists(ckp_path):
             last_ckpt = torch.load(ckp_path, map_location=self.args.device, weights_only=False)
@@ -239,6 +268,21 @@ class BaseTrainer:
             self.start_epoch = 0
             print(f"No checkpoint found at {ckp_path}, start training from scratch")
 
+        if load_encoder_vit_path:
+            print(f"Loading encoder from {load_encoder_vit_path}")
+            vit_mae_ckpt = torch.load(load_encoder_vit_path, map_location=self.args.device, weights_only=False)
+            vit_mae_state_dict = vit_mae_ckpt["model_state_dict"]
+            encoder_state_dict = {k: v for k, v in vit_mae_state_dict.items() if k.startswith("encoder.")}
+            encoder_state_dict = {k.replace("encoder.", ""): v for k, v in encoder_state_dict.items()}
+            encoder_state_dict = {k: v for k, v in encoder_state_dict.items() if "neck" not in k}
+            self.model.image_encoder.load_state_dict(encoder_state_dict, strict=False)
+            # set requires_grad to False for loaded weights (only the keys that are in the loaded weights)
+            for name, param in self.model.image_encoder.named_parameters():
+                if name in encoder_state_dict:
+                    param.requires_grad = False
+
+            print(f"Successfully loaded encoder from {load_encoder_vit_path}")
+
     def save_checkpoint(self, epoch, state_dict, describe="last"):
         torch.save(
             {
@@ -255,11 +299,11 @@ class BaseTrainer:
             join(MODEL_SAVE_PATH, f"sam_model_{describe}.pth"),
         )
 
-    def get_points(self, prev_masks, gt3D, threshold=0.5):
-        prediction = (torch.sigmoid(prev_masks) > threshold).long()
-        batch_points, batch_labels = click_methods[self.args.click_type](prediction, gt3D)
+    def get_points(self, mask_logits, mask_targets, threshold=0.5):
+        prediction = (torch.sigmoid(mask_logits) > threshold).long()
+        batch_points, batch_labels = click_methods[self.args.click_type](prediction, mask_targets)
 
-        if len(batch_points) != prev_masks.shape[0]:
+        if len(batch_points) != mask_logits.shape[0]:
             return None, None
 
         points_co = torch.cat(batch_points, dim=0).to(device)
@@ -270,36 +314,30 @@ class BaseTrainer:
 
         return torch.cat(self.click_points, dim=1).to(device), torch.cat(self.click_labels, dim=1).to(device)
 
-    def interaction(self, sam_model, image_embedding, gt3D, boxes):
+    def interaction(self, model, image_embeddings, mask_targets, boxes, image, xhat):
         losses_dict = {}
 
-        low_res_masks, prev_masks = decode_batch(
-            sam_model,
-            image_embedding,
-            gt3D,
-            None,
-            points=None,
-            boxes=boxes,
-        )
+        return_loss = self.rec_loss(xhat, image).clamp(min=0.0, max=1.0).mean()
 
-        return_loss = self.seg_loss(prev_masks, gt3D)
-        losses_dict["box"] = return_loss.item()
+        losses_dict["rec"] = return_loss.item()
+
+        mask_logits = decoder_forward(model, image_embeddings, mask_logits=None, points=None, boxes=boxes)
+
+        loss = self.seg_loss(mask_logits, mask_targets)
+        return_loss += loss
+        losses_dict["box"] = loss.item()
 
         for num_click in range(self.args.num_clicks):
-            points_input, labels_input = self.get_points(prev_masks, gt3D, threshold=0.5)
+            points_input, labels_input = self.get_points(mask_logits.detach(), mask_targets, threshold=0.5)
             if points_input is None:
-                return_loss = self.seg_loss(prev_masks, gt3D)
-                return prev_masks, return_loss, {}
+                return_loss += self.seg_loss(mask_logits, mask_targets)
+                return mask_logits, return_loss, {}
 
-            low_res_masks, prev_masks = decode_batch(
-                sam_model,
-                image_embedding,
-                gt3D,
-                low_res_masks,
-                points=[points_input, labels_input],
-                boxes=boxes,
+            mask_logits = decoder_forward(
+                model, image_embeddings, mask_logits.detach(), (points_input, labels_input), boxes
             )
-            loss = self.seg_loss(prev_masks, gt3D)
+            loss = self.seg_loss(mask_logits, mask_targets)
+
             if num_click == args.num_clicks - 1:
                 return_loss += args.last_click_loss_weight * loss
             else:
@@ -307,9 +345,9 @@ class BaseTrainer:
 
             losses_dict[f"click_{num_click+1}"] = loss.item()
 
-        return prev_masks, return_loss, losses_dict
+        return mask_logits, return_loss, losses_dict
 
-    def get_dice_score(self, prev_masks, gt3D):
+    def get_dice_score(self, mask_logits, mask_targets):
         def compute_dice(mask_pred, mask_gt):
             volume_sum = mask_gt.sum() + mask_pred.sum()
             if volume_sum == 0:
@@ -317,8 +355,8 @@ class BaseTrainer:
             volume_intersect = (mask_gt & mask_pred).sum()
             return 2 * volume_intersect / volume_sum
 
-        pred_masks = prev_masks > 0.0
-        true_masks = gt3D > 0
+        pred_masks = mask_logits > 0.0
+        true_masks = mask_targets > 0
         dice_list = []
         for i in range(true_masks.shape[0]):
             dice_list.append(compute_dice(pred_masks[i], true_masks[i]))
@@ -326,11 +364,10 @@ class BaseTrainer:
 
     def train_epoch(self, epoch):
         epoch_loss = 0
-        epoch_iou = 0
         self.model.train()
         sam_model = self.model
 
-        tbar = tqdm(self.dataloaders)
+        tbar = tqdm(self.train_dataloader)
 
         self.optimizer.zero_grad()
         step_loss = 0
@@ -340,25 +377,24 @@ class BaseTrainer:
                 break
 
             try:
-                image3D, gt3D, boxes = data3D["image"], data3D["label"], data3D["boxes"]
+                image, mask_targets, boxes = data3D["image"], data3D["label"], data3D["boxes"]
             except Exception as e:
                 print(f"Error processing batch at step {step}: {e}")
-
-            image3D = image3D.to(device)
-            gt3D = (gt3D != 0).to(device).type(torch.long)
+            image = image.to(device)
+            mask_targets = (mask_targets != 0).to(device).type(torch.long)
             boxes = boxes.to(device)
             with torch.amp.autocast("cuda"):
-                image_embedding = sam_model.image_encoder(image3D)
+                image_embeddings, xhat = sam_model.segresnet(image)
 
                 self.click_points = []
                 self.click_labels = []
 
-                pred_list = []
-
-                prev_masks, loss, losses_dict = self.interaction(sam_model, image_embedding, gt3D, boxes)
+                mask_logits, loss, losses_dict = self.interaction(
+                    sam_model, image_embeddings, mask_targets, boxes, image, xhat
+                )
 
             epoch_loss += loss.item()
-            epoch_dice += self.get_dice_score(prev_masks, gt3D)
+            epoch_dice += self.get_dice_score(mask_logits, mask_targets)
             cur_loss = loss.item()
 
             loss /= self.args.accumulation_steps
@@ -371,13 +407,16 @@ class BaseTrainer:
             save_batch_stats(losses_dict)
 
             if step % self.args.accumulation_steps == 0 and step != 0:
+                # clip grads at magnitude 1
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(sam_model.parameters(), 1.0)
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
                 self.optimizer.zero_grad()
 
                 print_loss = step_loss / self.args.accumulation_steps
                 step_loss = 0
-                print_dice = self.get_dice_score(prev_masks, gt3D)
+                print_dice = self.get_dice_score(mask_logits, mask_targets)
             else:
                 step_loss += cur_loss
 
@@ -396,21 +435,71 @@ class BaseTrainer:
             if step % self.args.log_every_n_steps == 0:
                 plot_batch_stats()
                 os.makedirs(f"{LOG_OUT_DIR}/niigz", exist_ok=True)
-                save_niigz(prev_masks > 0.0, save_path=f"{LOG_OUT_DIR}/niigz/pred.nii.gz")
-                save_niigz(torch.sigmoid(prev_masks), save_path=f"{LOG_OUT_DIR}/niigz/predSigmoid.nii.gz")
-                save_niigz(gt3D, save_path=f"{LOG_OUT_DIR}/niigz/gt.nii.gz")
-                save_niigz(image3D, save_path=f"{LOG_OUT_DIR}/niigz/image.nii.gz")
+                save_niigz(mask_logits > 0.0, save_path=f"{LOG_OUT_DIR}/niigz/train_pred.nii.gz")
+                save_niigz(torch.sigmoid(mask_logits), save_path=f"{LOG_OUT_DIR}/niigz/train_pred_probs.nii.gz")
+                save_niigz(torch.sigmoid(xhat), save_path=f"{LOG_OUT_DIR}/niigz/train_reconstruction.nii.gz")
+                save_niigz(mask_targets, save_path=f"{LOG_OUT_DIR}/niigz/train_gt.nii.gz")
+                save_niigz(image, save_path=f"{LOG_OUT_DIR}/niigz/train_image.nii.gz")
 
         epoch_loss /= step + 1
         epoch_dice /= step + 1
 
-        return epoch_loss, epoch_iou, epoch_dice, pred_list
+        return epoch_loss, epoch_dice
 
-    def eval_epoch(self, epoch, num_clicks):
-        return 0
+    def val_epoch(self, epoch):
+        epoch_loss = 0
+        self.model.eval()
+        sam_model = self.model
 
-    def plot_result(self, plot_data, description, save_name):
-        plt.plot(plot_data)
+        tbar = tqdm(self.val_dataloader)
+
+        epoch_dice = 0
+        with torch.no_grad():
+            for step, data3D in enumerate(tbar):
+                if self.args.dry_run and (step > 2):
+                    print("Dry run, skipping batch")
+                    break
+
+                image, mask_targets, boxes = data3D["image"], data3D["label"], data3D["boxes"]
+
+                image = image.to(device)
+                mask_targets = (mask_targets != 0).to(device).type(torch.long)
+                boxes = boxes.to(device)
+                with torch.amp.autocast("cuda"):
+                    image_embeddings, xhat = sam_model.segresnet(image)
+
+                    self.click_points = []
+                    self.click_labels = []
+
+                    mask_logits, loss, losses_dict = self.interaction(
+                        sam_model, image_embeddings, mask_targets, boxes, image, xhat
+                    )
+
+                epoch_loss += loss.item()
+                epoch_dice += self.get_dice_score(mask_logits, mask_targets)
+
+                loss /= self.args.accumulation_steps
+
+                save_batch_stats({f"val_{key}": value for key, value in losses_dict.items()})
+
+                if step % self.args.log_every_n_steps == 0:
+                    plot_batch_stats()
+                    os.makedirs(f"{LOG_OUT_DIR}/niigz", exist_ok=True)
+                    save_niigz(mask_logits > 0.0, save_path=f"{LOG_OUT_DIR}/niigz/val_pred.nii.gz")
+                    save_niigz(torch.sigmoid(mask_logits), save_path=f"{LOG_OUT_DIR}/niigz/val_pred_probs.nii.gz")
+                    save_niigz(torch.sigmoid(xhat), save_path=f"{LOG_OUT_DIR}/niigz/val_reconstruction.nii.gz")
+                    save_niigz(mask_targets, save_path=f"{LOG_OUT_DIR}/niigz/val_gt.nii.gz")
+                    save_niigz(image, save_path=f"{LOG_OUT_DIR}/niigz/val_image.nii.gz")
+
+            epoch_loss /= step + 1
+            epoch_dice /= step + 1
+
+            return epoch_loss, epoch_dice
+
+    def plot_result(self, train_data, val_data, description, save_name):
+        plt.plot(train_data)
+        plt.plot(val_data)
+        plt.legend(["Train", "Val"])
         plt.title(description)
         plt.xlabel("Epoch")
         plt.ylabel(f"{save_name}")
@@ -424,34 +513,27 @@ class BaseTrainer:
         for epoch in range(self.start_epoch, self.args.num_epochs):
             print(f"Epoch: {epoch}/{self.args.num_epochs - 1}")
 
-            epoch_loss, epoch_iou, epoch_dice, pred_list = self.train_epoch(epoch)
+            epoch_loss, epoch_dice = self.train_epoch(epoch)
+            val_epoch_loss, val_epoch_dice = self.val_epoch(epoch)
 
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
             self.losses.append(epoch_loss)
             self.dices.append(epoch_dice)
-            print(f"EPOCH: {epoch}, Loss: {epoch_loss}")
-            print(f"EPOCH: {epoch}, Dice: {epoch_dice}")
+            self.val_losses.append(val_epoch_loss)
+            self.val_dices.append(val_epoch_dice)
+            print(f"EPOCH: {epoch}, Train Loss: {epoch_loss}, Val Loss: {val_epoch_loss}")
+            print(f"EPOCH: {epoch}, Train Dice: {epoch_dice}, Val Dice: {val_epoch_dice}")
             logger.info(f"Epoch\t {epoch}\t : loss: {epoch_loss}, dice: {epoch_dice}")
 
             state_dict = self.model.state_dict()
 
             # save latest checkpoint
             self.save_checkpoint(epoch, state_dict, describe="latest")
+            self.plot_result(self.losses, self.val_losses, "Dice + Cross Entropy Loss", "Loss")
+            self.plot_result(self.dices, self.val_dices, "Dice", "Dice")
 
-            # save train loss best checkpoint
-            if epoch_loss < self.best_loss:
-                self.best_loss = epoch_loss
-                self.save_checkpoint(epoch, state_dict, describe="loss_best")
-
-            # save train dice best checkpoint
-            if epoch_dice > self.best_dice:
-                self.best_dice = epoch_dice
-                self.save_checkpoint(epoch, state_dict, describe="dice_best")
-
-            self.plot_result(self.losses, "Dice + Cross Entropy Loss", "Loss")
-            self.plot_result(self.dices, "Dice", "Dice")
         logger.info("=====================================================================")
         logger.info(f"Best loss: {self.best_loss}")
         logger.info(f"Best dice: {self.best_dice}")
