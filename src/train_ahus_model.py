@@ -8,6 +8,7 @@ import numpy as np
 
 join = os.path.join
 import argparse
+from pathlib import Path
 
 import nibabel as nib
 import torch
@@ -70,6 +71,7 @@ MODEL_SAVE_PATH = join(args.work_dir, args.task_name)
 os.makedirs(MODEL_SAVE_PATH, exist_ok=True)
 
 LOGGING_DICT = {}
+CLASS_STATS_DICT = {"train": {}, "val": {}}
 
 
 def save_batch_stats(losses_dict):
@@ -77,6 +79,22 @@ def save_batch_stats(losses_dict):
         if key not in LOGGING_DICT:
             LOGGING_DICT[key] = []
         LOGGING_DICT[key].append(value)
+
+
+def save_class_stats(dataset_type, class_stats_dict, idx):
+    if dataset_type not in CLASS_STATS_DICT:
+        CLASS_STATS_DICT[dataset_type] = {}
+
+    for loss_type, class_type in class_stats_dict.items():
+        if loss_type not in CLASS_STATS_DICT[dataset_type]:
+            CLASS_STATS_DICT[dataset_type][loss_type] = {}
+
+        for class_name, value in class_type.items():
+            if class_name not in CLASS_STATS_DICT[dataset_type][loss_type]:
+                CLASS_STATS_DICT[dataset_type][loss_type][class_name] = [[], []]
+
+            CLASS_STATS_DICT[dataset_type][loss_type][class_name][0].append(value)
+            CLASS_STATS_DICT[dataset_type][loss_type][class_name][1].append(idx)
 
 
 def ma(arr, k=100):
@@ -110,6 +128,42 @@ def plot_batch_stats():
     plt.yscale("log")
     plt.savefig(f"{LOG_OUT_DIR}/train_step_loss.png", dpi=300)
     plt.close()
+
+
+def _plot_class_stats(group, prefix):
+    linestyles = ["-", "--", "-."]
+    num_colors = 10
+    for loss_type, class_type in group.items():
+        for i, (key, (value, value_idx)) in enumerate(sorted(class_type.items())):
+            plt.plot(
+                value_idx,
+                ma(value),
+                label=key,
+                linewidth=0.5,
+                c=f"C{i % num_colors}",
+                linestyle=linestyles[i // num_colors],
+            )
+            plt.grid(True)
+        plt.legend(bbox_to_anchor=(1.00, 1.0), loc="upper left")
+        plt.yscale("log")
+        plt.tight_layout()
+        plt.savefig(f"{LOG_OUT_DIR}/{prefix}_{loss_type}_class_stats.png", dpi=300)
+        plt.close()
+
+
+def plot_class_stats():
+    for dataset_type, dataset_type_values in CLASS_STATS_DICT.items():
+        groups = {}
+        for k, v in dataset_type_values.items():
+            groups[k] = {}
+            for name, (value, idx) in v.items():
+                group_name = "-".join(name[:-1])
+                instance_name = name[-1]
+                if group_name not in groups[k]:
+                    groups[k][group_name] = {}
+                groups[k][group_name][instance_name] = [value, idx]
+        for group_name, group in groups.items():
+            _plot_class_stats(group, f"{dataset_type}_{group_name}")
 
 
 def save_niigz(volume, save_path):
@@ -314,24 +368,62 @@ class BaseTrainer:
 
         return torch.cat(self.click_points, dim=1).to(device), torch.cat(self.click_labels, dim=1).to(device)
 
-    def interaction(self, model, image_embeddings, mask_targets, boxes, image, xhat):
+    def interaction(self, model, image_embeddings, mask_targets, boxes, image, xhat, rel_file_path=None):
         losses_dict = {}
 
-        return_loss = self.rec_loss(xhat, image).clamp(min=0.0, max=1.0).mean()
+        rec_loss = self.rec_loss(xhat, image).clamp(min=0.0, max=1.0)
+        return_loss = rec_loss.mean()
 
         losses_dict["rec"] = return_loss.item()
 
         mask_logits = decoder_forward(model, image_embeddings, mask_logits=None, points=None, boxes=boxes)
 
-        loss = self.seg_loss(mask_logits, mask_targets)
+        rec_loss_per_sample = rec_loss.mean(axis=list(range(1, len(rec_loss.shape))))
+        root_paths = [Path(p).parts[:1] for p in rel_file_path]
+        root_paths_set = set(root_paths)
+        sub_paths = [Path(p).parts[:2] for p in rel_file_path]
+        sub_paths_set = set(sub_paths)
+
+        rec_losses_dict = {}
+        seg_losses_dict = {}
+
+        tot_running_seg_loss = 0
+
+        for root_path in root_paths_set:
+            curr_root_rec_loss = 0
+            curr_root_seg_loss = 0
+            num_samples = 0
+
+            for sub_path in sub_paths_set:
+                if not sub_path[0] == root_path[0]:
+                    continue
+                idxs = [i for i, p in enumerate(sub_paths) if p == sub_path]
+                num_samples += len(idxs)
+
+                curr_rec_loss = rec_loss_per_sample[idxs].detach().cpu().numpy().mean()
+                curr_root_rec_loss += curr_rec_loss * len(idxs)
+                rec_losses_dict[sub_path] = curr_rec_loss
+
+                curr_seg_loss = self.seg_loss(mask_logits[idxs], mask_targets[idxs])
+                curr_root_seg_loss += curr_seg_loss * len(idxs)
+                seg_losses_dict[sub_path] = curr_seg_loss.detach().cpu().numpy()
+
+            rec_losses_dict[root_path] = curr_root_rec_loss / num_samples
+            seg_losses_dict[root_path] = curr_root_seg_loss.detach().cpu().numpy() / num_samples
+            tot_running_seg_loss += curr_root_seg_loss
+
+        loss = tot_running_seg_loss / len(sub_paths)
+
         return_loss += loss
         losses_dict["box"] = loss.item()
+
+        class_losses_dict = {"seg": seg_losses_dict, "rec": rec_losses_dict}
 
         for num_click in range(self.args.num_clicks):
             points_input, labels_input = self.get_points(mask_logits.detach(), mask_targets, threshold=0.5)
             if points_input is None:
                 return_loss += self.seg_loss(mask_logits, mask_targets)
-                return mask_logits, return_loss, {}
+                return mask_logits, return_loss, {}, class_losses_dict
 
             mask_logits = decoder_forward(
                 model, image_embeddings, mask_logits.detach(), (points_input, labels_input), boxes
@@ -345,7 +437,7 @@ class BaseTrainer:
 
             losses_dict[f"click_{num_click+1}"] = loss.item()
 
-        return mask_logits, return_loss, losses_dict
+        return mask_logits, return_loss, losses_dict, class_losses_dict
 
     def get_dice_score(self, mask_logits, mask_targets):
         def compute_dice(mask_pred, mask_gt):
@@ -377,7 +469,12 @@ class BaseTrainer:
                 break
 
             try:
-                image, mask_targets, boxes = data3D["image"], data3D["label"], data3D["boxes"]
+                image, mask_targets, boxes, rel_file_path = (
+                    data3D["image"],
+                    data3D["label"],
+                    data3D["boxes"],
+                    data3D["rel_path"],
+                )
             except Exception as e:
                 print(f"Error processing batch at step {step}: {e}")
             image = image.to(device)
@@ -389,9 +486,10 @@ class BaseTrainer:
                 self.click_points = []
                 self.click_labels = []
 
-                mask_logits, loss, losses_dict = self.interaction(
-                    sam_model, image_embeddings, mask_targets, boxes, image, xhat
+                mask_logits, loss, losses_dict, class_losses_dict, curr_nii_dict = self.interaction(
+                    sam_model, image_embeddings, mask_targets, boxes, image, xhat, rel_file_path
                 )
+            nii_dict = nii_dict | curr_nii_dict
 
             epoch_loss += loss.item()
             epoch_dice += self.get_dice_score(mask_logits, mask_targets)
@@ -405,6 +503,7 @@ class BaseTrainer:
 
             self.scaler.scale(loss).backward()
             save_batch_stats(losses_dict)
+            save_class_stats("train", class_losses_dict, step + epoch * len(self.train_dataloader))
 
             if step % self.args.accumulation_steps == 0 and step != 0:
                 # clip grads at magnitude 1
@@ -434,6 +533,7 @@ class BaseTrainer:
 
             if step % self.args.log_every_n_steps == 0:
                 plot_batch_stats()
+                plot_class_stats()
                 os.makedirs(f"{LOG_OUT_DIR}/niigz", exist_ok=True)
                 save_niigz(mask_logits > 0.0, save_path=f"{LOG_OUT_DIR}/niigz/train_pred.nii.gz")
                 save_niigz(torch.sigmoid(mask_logits), save_path=f"{LOG_OUT_DIR}/niigz/train_pred_probs.nii.gz")
@@ -460,7 +560,12 @@ class BaseTrainer:
                     print("Dry run, skipping batch")
                     break
 
-                image, mask_targets, boxes = data3D["image"], data3D["label"], data3D["boxes"]
+                image, mask_targets, boxes, rel_file_path = (
+                    data3D["image"],
+                    data3D["label"],
+                    data3D["boxes"],
+                    data3D["rel_path"],
+                )
 
                 image = image.to(device)
                 mask_targets = (mask_targets != 0).to(device).type(torch.long)
@@ -471,8 +576,8 @@ class BaseTrainer:
                     self.click_points = []
                     self.click_labels = []
 
-                    mask_logits, loss, losses_dict = self.interaction(
-                        sam_model, image_embeddings, mask_targets, boxes, image, xhat
+                    mask_logits, loss, losses_dict, class_losses_dict = self.interaction(
+                        sam_model, image_embeddings, mask_targets, boxes, image, xhat, rel_file_path
                     )
 
                 epoch_loss += loss.item()
@@ -481,9 +586,11 @@ class BaseTrainer:
                 loss /= self.args.accumulation_steps
 
                 save_batch_stats({f"val_{key}": value for key, value in losses_dict.items()})
+                save_class_stats("val", class_losses_dict, step + epoch * len(self.train_dataloader))
 
                 if step % self.args.log_every_n_steps == 0:
                     plot_batch_stats()
+                    plot_class_stats()
                     os.makedirs(f"{LOG_OUT_DIR}/niigz", exist_ok=True)
                     save_niigz(mask_logits > 0.0, save_path=f"{LOG_OUT_DIR}/niigz/val_pred.nii.gz")
                     save_niigz(torch.sigmoid(mask_logits), save_path=f"{LOG_OUT_DIR}/niigz/val_pred_probs.nii.gz")

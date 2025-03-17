@@ -73,10 +73,12 @@ class NPZDataset(Dataset):
                 "image": imgdata,
             }
 
+        rel_path = os.path.relpath(file_path, self.base_dir)
         return {
             "image": imgdata,
             "label": labeldata,
             "boxes": self.get_bboxes_3D(labeldata),
+            "rel_path": rel_path,
         }
 
     def get_bbox_2D(self, gt2D):
