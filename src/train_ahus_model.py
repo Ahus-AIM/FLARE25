@@ -19,6 +19,7 @@ from tqdm import tqdm
 from dataset.npz_dataset import NPZDataset
 from model.build_ahus_model import model_registry
 from transform.transform import Compose, CropOrPad, Flip
+from utils.decode import decoder_forward
 from utils.interact import interact
 
 # set up parser
@@ -155,34 +156,6 @@ def get_dataloaders_npz(args):
     return train_dataloader, val_dataloader
 
 
-class MSEFourierLoss(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, xhat, x):
-        diff = (xhat - x) ** 2
-        fft = torch.fft.fftn(diff, dim=[-3, -2, -1])
-        fft = torch.fft.fftshift(fft, dim=[-3, -2, -1])
-        fft = torch.abs(fft)
-        weight_tensor = torch.zeros_like(fft)
-
-        # Create a high-pass filter
-        shape = fft.shape[-3:]  # Get the last three dimensions (spatial dimensions)
-        freqs = torch.meshgrid([torch.linspace(-0.5, 0.5, s, device=x.device) for s in shape], indexing="ij")
-        freq_radius = torch.sqrt(sum(f**2 for f in freqs))  # Compute frequency magnitude
-
-        weight_tensor = torch.ones_like(fft)
-        weight_tensor[freq_radius > 0.1] = 10  # High frequencies get 10x weight
-
-        # Apply the weight
-        fft_weighted = (
-            fft * weight_tensor
-        )  # TODO apply a high pass filter to the fourier transform, so the high frequency components are penalized more (10x)
-
-        loss = torch.mean(fft_weighted)
-        return loss
-
-
 class BaseTrainer:
     def __init__(self, model, dataloaders, args):
         self.model = model
@@ -206,8 +179,10 @@ class BaseTrainer:
             self.init_checkpoint(self.args.checkpoint, self.args.load_encoder_vit_path)
 
     def set_loss_fn(self):
-        self.seg_loss = DiceCELoss(sigmoid=True, squared_pred=True, reduction="mean", smooth_dr=1e-5, smooth_nr=1e-5)
-        self.rec_loss = torch.nn.BCEWithLogitsLoss()
+        self.seg_loss = DiceCELoss(
+            sigmoid=True, squared_pred=True, reduction="mean", smooth_dr=1e-5, smooth_nr=1e-5, lambda_ce=20.0
+        )
+        self.rec_loss = torch.nn.BCEWithLogitsLoss(reduction="none")
 
     def set_optimizer(self):
         sam_model = self.model
@@ -233,7 +208,7 @@ class BaseTrainer:
             ]
 
         param_groups = []
-        param_groups.extend(get_param_groups(sam_model.segresnet, lr_scale=1.0))
+        param_groups.extend(get_param_groups(sam_model.segresnet, lr_scale=0.1))
         param_groups.extend(get_param_groups(sam_model.prompt_encoder, lr_scale=1.0))
         param_groups.extend(
             get_param_groups(
@@ -324,9 +299,9 @@ class BaseTrainer:
             join(MODEL_SAVE_PATH, f"sam_model_{describe}.pth"),
         )
 
-    def get_points(self, mask_logits, gt3D, threshold=0.5):
+    def get_points(self, mask_logits, mask_targets, threshold=0.5):
         prediction = (torch.sigmoid(mask_logits) > threshold).long()
-        batch_points, batch_labels = click_methods[self.args.click_type](prediction, gt3D)
+        batch_points, batch_labels = click_methods[self.args.click_type](prediction, mask_targets)
 
         if len(batch_points) != mask_logits.shape[0]:
             return None, None
@@ -339,30 +314,29 @@ class BaseTrainer:
 
         return torch.cat(self.click_points, dim=1).to(device), torch.cat(self.click_labels, dim=1).to(device)
 
-    def interaction(self, model, image_embeddings, gt3D, boxes, image3D, xhat):
+    def interaction(self, model, image_embeddings, mask_targets, boxes, image, xhat):
         losses_dict = {}
 
-        return_loss = self.rec_loss(xhat, image3D)
+        return_loss = self.rec_loss(xhat, image).clamp(min=0.0, max=1.0).mean()
+
         losses_dict["rec"] = return_loss.item()
 
-        sparse_emb, dense_emb = model.prompt_encoder(None, boxes, None)
-        mask_logits = model.mask_decoder(image_embeddings, model.prompt_encoder.get_dense_pe(), sparse_emb, dense_emb)
+        mask_logits = decoder_forward(model, image_embeddings, mask_logits=None, points=None, boxes=boxes)
 
-        return_loss += self.seg_loss(mask_logits, gt3D)
-        losses_dict["box"] = return_loss.item()
+        loss = self.seg_loss(mask_logits, mask_targets)
+        return_loss += loss
+        losses_dict["box"] = loss.item()
 
         for num_click in range(self.args.num_clicks):
-            points_input, labels_input = self.get_points(mask_logits, gt3D, threshold=0.5)
+            points_input, labels_input = self.get_points(mask_logits.detach(), mask_targets, threshold=0.5)
             if points_input is None:
-                return_loss += self.seg_loss(mask_logits, gt3D)
+                return_loss += self.seg_loss(mask_logits, mask_targets)
                 return mask_logits, return_loss, {}
 
-            sparse_emb, dense_emb = model.prompt_encoder((points_input, labels_input), boxes, mask_logits)
-            mask_logits = model.mask_decoder(
-                image_embeddings, model.prompt_encoder.get_dense_pe(), sparse_emb, dense_emb
+            mask_logits = decoder_forward(
+                model, image_embeddings, mask_logits.detach(), (points_input, labels_input), boxes
             )
-
-            loss = self.seg_loss(mask_logits, gt3D)
+            loss = self.seg_loss(mask_logits, mask_targets)
 
             if num_click == args.num_clicks - 1:
                 return_loss += args.last_click_loss_weight * loss
@@ -373,7 +347,7 @@ class BaseTrainer:
 
         return mask_logits, return_loss, losses_dict
 
-    def get_dice_score(self, mask_logits, gt3D):
+    def get_dice_score(self, mask_logits, mask_targets):
         def compute_dice(mask_pred, mask_gt):
             volume_sum = mask_gt.sum() + mask_pred.sum()
             if volume_sum == 0:
@@ -382,7 +356,7 @@ class BaseTrainer:
             return 2 * volume_intersect / volume_sum
 
         pred_masks = mask_logits > 0.0
-        true_masks = gt3D > 0
+        true_masks = mask_targets > 0
         dice_list = []
         for i in range(true_masks.shape[0]):
             dice_list.append(compute_dice(pred_masks[i], true_masks[i]))
@@ -403,24 +377,24 @@ class BaseTrainer:
                 break
 
             try:
-                image3D, gt3D, boxes = data3D["image"], data3D["label"], data3D["boxes"]
+                image, mask_targets, boxes = data3D["image"], data3D["label"], data3D["boxes"]
             except Exception as e:
                 print(f"Error processing batch at step {step}: {e}")
-            image3D = image3D.to(device)
-            gt3D = (gt3D != 0).to(device).type(torch.long)
+            image = image.to(device)
+            mask_targets = (mask_targets != 0).to(device).type(torch.long)
             boxes = boxes.to(device)
             with torch.amp.autocast("cuda"):
-                image_embeddings, xhat = sam_model.segresnet(image3D)
+                image_embeddings, xhat = sam_model.segresnet(image)
 
                 self.click_points = []
                 self.click_labels = []
 
                 mask_logits, loss, losses_dict = self.interaction(
-                    sam_model, image_embeddings, gt3D, boxes, image3D, xhat
+                    sam_model, image_embeddings, mask_targets, boxes, image, xhat
                 )
 
             epoch_loss += loss.item()
-            epoch_dice += self.get_dice_score(mask_logits, gt3D)
+            epoch_dice += self.get_dice_score(mask_logits, mask_targets)
             cur_loss = loss.item()
 
             loss /= self.args.accumulation_steps
@@ -433,13 +407,16 @@ class BaseTrainer:
             save_batch_stats(losses_dict)
 
             if step % self.args.accumulation_steps == 0 and step != 0:
+                # clip grads at magnitude 1
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(sam_model.parameters(), 1.0)
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
                 self.optimizer.zero_grad()
 
                 print_loss = step_loss / self.args.accumulation_steps
                 step_loss = 0
-                print_dice = self.get_dice_score(mask_logits, gt3D)
+                print_dice = self.get_dice_score(mask_logits, mask_targets)
             else:
                 step_loss += cur_loss
 
@@ -461,8 +438,8 @@ class BaseTrainer:
                 save_niigz(mask_logits > 0.0, save_path=f"{LOG_OUT_DIR}/niigz/train_pred.nii.gz")
                 save_niigz(torch.sigmoid(mask_logits), save_path=f"{LOG_OUT_DIR}/niigz/train_pred_probs.nii.gz")
                 save_niigz(torch.sigmoid(xhat), save_path=f"{LOG_OUT_DIR}/niigz/train_reconstruction.nii.gz")
-                save_niigz(gt3D, save_path=f"{LOG_OUT_DIR}/niigz/train_gt.nii.gz")
-                save_niigz(image3D, save_path=f"{LOG_OUT_DIR}/niigz/train_image.nii.gz")
+                save_niigz(mask_targets, save_path=f"{LOG_OUT_DIR}/niigz/train_gt.nii.gz")
+                save_niigz(image, save_path=f"{LOG_OUT_DIR}/niigz/train_image.nii.gz")
 
         epoch_loss /= step + 1
         epoch_dice /= step + 1
@@ -483,23 +460,23 @@ class BaseTrainer:
                     print("Dry run, skipping batch")
                     break
 
-                image3D, gt3D, boxes = data3D["image"], data3D["label"], data3D["boxes"]
+                image, mask_targets, boxes = data3D["image"], data3D["label"], data3D["boxes"]
 
-                image3D = image3D.to(device)
-                gt3D = (gt3D != 0).to(device).type(torch.long)
+                image = image.to(device)
+                mask_targets = (mask_targets != 0).to(device).type(torch.long)
                 boxes = boxes.to(device)
                 with torch.amp.autocast("cuda"):
-                    image_embeddings, xhat = sam_model.segresnet(image3D)
+                    image_embeddings, xhat = sam_model.segresnet(image)
 
                     self.click_points = []
                     self.click_labels = []
 
                     mask_logits, loss, losses_dict = self.interaction(
-                        sam_model, image_embeddings, gt3D, boxes, image3D, xhat
+                        sam_model, image_embeddings, mask_targets, boxes, image, xhat
                     )
 
                 epoch_loss += loss.item()
-                epoch_dice += self.get_dice_score(mask_logits, gt3D)
+                epoch_dice += self.get_dice_score(mask_logits, mask_targets)
 
                 loss /= self.args.accumulation_steps
 
@@ -511,8 +488,8 @@ class BaseTrainer:
                     save_niigz(mask_logits > 0.0, save_path=f"{LOG_OUT_DIR}/niigz/val_pred.nii.gz")
                     save_niigz(torch.sigmoid(mask_logits), save_path=f"{LOG_OUT_DIR}/niigz/val_pred_probs.nii.gz")
                     save_niigz(torch.sigmoid(xhat), save_path=f"{LOG_OUT_DIR}/niigz/val_reconstruction.nii.gz")
-                    save_niigz(gt3D, save_path=f"{LOG_OUT_DIR}/niigz/val_gt.nii.gz")
-                    save_niigz(image3D, save_path=f"{LOG_OUT_DIR}/niigz/val_image.nii.gz")
+                    save_niigz(mask_targets, save_path=f"{LOG_OUT_DIR}/niigz/val_gt.nii.gz")
+                    save_niigz(image, save_path=f"{LOG_OUT_DIR}/niigz/val_image.nii.gz")
 
             epoch_loss /= step + 1
             epoch_dice /= step + 1
