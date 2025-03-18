@@ -129,7 +129,12 @@ import pandas as pd
 import torch
 from scipy import integrate
 from scipy.ndimage import distance_transform_edt
-from surface_distance import compute_dice_coefficient, compute_surface_dice_at_tolerance, compute_surface_distances
+
+from src.utils.surface_dice import (
+    compute_dice_coefficient,
+    compute_surface_dice_at_tolerance,
+    compute_surface_distances,
+)
 
 
 # Taken from CVPR24 challenge code with change to np.unique
@@ -188,6 +193,7 @@ os.makedirs(save_path, exist_ok=True)
 
 # dockers = sorted(os.listdir(docker_path))
 test_cases = sorted(os.listdir(test_img_path))
+test_cases = [case for case in test_cases if "resampled" not in case]
 
 # create temp folers for inference one-by-one
 if os.path.exists(input_temp):
@@ -333,7 +339,10 @@ for case in test_cases:
                     assert largest_component[center]  # click within error
 
                     if verbose:
-                        print(f"Class {cls}: Largest error component center is at {center}")
+                        if gts_cls[center] == 0:
+                            print(f"Class {cls}: Placed background click at {center}")
+                        else:
+                            print(f"Class {cls}: Placed foreground click at {center}")
                 else:
                     if verbose:
                         print(
@@ -361,9 +370,7 @@ for case in test_cases:
                     prev_pred=segs,
                 )
 
-        cmd = f"python3 sammed_predict.py --load_path {input_temp} --save_path ./outputs --checkpoint /home/stenheli/SAM-MED3D/work_dir/feb26/sam_model_latest.pth --device cuda"
-        if verbose:
-            print(teamname, " docker command:", cmd, "\n", "testing image name:", case)
+        cmd = f"python3 -m src.submission.ahus_predict --load_path {input_temp} --save_path ./outputs"
 
         start_time = time.time()
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -394,7 +401,9 @@ for case in test_cases:
             nsd = 0.0  # Assume model performs poor on this sample
         dscs.append(dsc)
         nsds.append(nsd)
-        print(f"Dice {dsc:.3f} NSD {nsd:.3f}")
+        print(
+            f"Iter {it} Dice {dsc:.3f} NSD {nsd:.3f} Segmented {(segs > 0).sum() / (segs >= 0).sum():.3f}, Ground truth {(gts > 0).sum() / (gts >= 0).sum():.3f}"
+        )
         seg_name = case
 
         # Copy temp prediction to the final folder
