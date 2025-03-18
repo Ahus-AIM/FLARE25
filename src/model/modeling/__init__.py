@@ -1,5 +1,4 @@
 from .ahus_model import AhusModel
-from .normalized_autoencoder3D import NormalizedDecoder3D, NormalizedMaskedAutoencoder3D
 from .normalized_image_encoder3D import NormalizedImageEncoderViT3D
 from .normalized_mask_decoder3D import NormalizedMaskDecoder3D, NormalizedTwoWayTransformer3D
 from .prompt_encoder3D import PromptEncoder3D
