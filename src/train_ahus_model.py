@@ -396,26 +396,9 @@ class BaseTrainer:
 
         return torch.cat(self.click_points, dim=1).to(device), torch.cat(self.click_labels, dim=1).to(device)
 
-    def interaction(
-        self,
-        model,
-        image_embeddings,
-        mask_targets,
-        boxes,
-        image,
-        xhat,
-        rel_file_path=None,
-        split_filename_to_dirs=False,
+    def store_class_losses_and_nii(
+        self, image, mask_logits, mask_targets, rec_loss, rel_file_path, split_filename_to_dirs
     ):
-        losses_dict = {}
-
-        rec_loss = self.rec_loss(xhat, image).clamp(min=0.0, max=1.0)
-        return_loss = rec_loss.mean()
-
-        losses_dict["rec"] = return_loss.item()
-
-        mask_logits = decoder_forward(model, image_embeddings, mask_logits=None, points=None, boxes=boxes)
-
         rec_loss_per_sample = rec_loss.mean(axis=list(range(1, len(rec_loss.shape))))
 
         if split_filename_to_dirs:
@@ -468,11 +451,36 @@ class BaseTrainer:
             tot_running_seg_loss += curr_root_seg_loss
 
         loss = tot_running_seg_loss / len(sub_paths)
+        class_losses_dict = {"seg": seg_losses_dict, "rec": rec_losses_dict}
+
+        return loss, class_losses_dict, nii_dict
+
+    def interaction(
+        self,
+        model,
+        image_embeddings,
+        mask_targets,
+        boxes,
+        image,
+        xhat,
+        rel_file_path=None,
+        split_filename_to_dirs=False,
+    ):
+        losses_dict = {}
+
+        rec_loss = self.rec_loss(xhat, image).clamp(min=0.0, max=1.0)
+        return_loss = rec_loss.mean()
+
+        losses_dict["rec"] = return_loss.item()
+
+        mask_logits = decoder_forward(model, image_embeddings, mask_logits=None, points=None, boxes=boxes)
+
+        loss, class_losses_dict, nii_dict = self.store_class_losses_and_nii(
+            image, mask_logits, mask_targets, rec_loss, rel_file_path, split_filename_to_dirs
+        )
 
         return_loss += loss
         losses_dict["box"] = loss.item()
-
-        class_losses_dict = {"seg": seg_losses_dict, "rec": rec_losses_dict}
 
         for num_click in range(self.args.num_clicks):
             points_input, labels_input = self.get_points(mask_logits.detach(), mask_targets, threshold=0.5)
