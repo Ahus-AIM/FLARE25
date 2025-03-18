@@ -396,7 +396,17 @@ class BaseTrainer:
 
         return torch.cat(self.click_points, dim=1).to(device), torch.cat(self.click_labels, dim=1).to(device)
 
-    def interaction(self, model, image_embeddings, mask_targets, boxes, image, xhat, rel_file_path=None):
+    def interaction(
+        self,
+        model,
+        image_embeddings,
+        mask_targets,
+        boxes,
+        image,
+        xhat,
+        rel_file_path=None,
+        split_filename_to_dirs=False,
+    ):
         losses_dict = {}
 
         rec_loss = self.rec_loss(xhat, image).clamp(min=0.0, max=1.0)
@@ -407,9 +417,18 @@ class BaseTrainer:
         mask_logits = decoder_forward(model, image_embeddings, mask_logits=None, points=None, boxes=boxes)
 
         rec_loss_per_sample = rec_loss.mean(axis=list(range(1, len(rec_loss.shape))))
-        root_paths = [Path(p).parts[:1] for p in rel_file_path]
+
+        if split_filename_to_dirs:
+            root_paths = []
+            sub_paths = []
+            for p in rel_file_path:
+                root_paths.append(tuple(p.split("_")[:1]))
+                sub_paths.append(tuple(p.split("_")[:2]))
+        else:
+            root_paths = [Path(p).parts[:1] for p in rel_file_path]
+            sub_paths = [Path(p).parts[:2] for p in rel_file_path]
+
         root_paths_set = set(root_paths)
-        sub_paths = [Path(p).parts[:2] for p in rel_file_path]
         sub_paths_set = set(sub_paths)
 
         nii_dict = {}
@@ -617,7 +636,14 @@ class BaseTrainer:
                     self.click_labels = []
 
                     mask_logits, loss, losses_dict, class_losses_dict, curr_nii_dict = self.interaction(
-                        sam_model, image_embeddings, mask_targets, boxes, image, xhat, rel_file_path
+                        sam_model,
+                        image_embeddings,
+                        mask_targets,
+                        boxes,
+                        image,
+                        xhat,
+                        rel_file_path,
+                        split_filename_to_dirs=True,
                     )
 
                 nii_dict = nii_dict | curr_nii_dict
