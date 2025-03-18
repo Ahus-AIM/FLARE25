@@ -166,10 +166,38 @@ def plot_class_stats():
             _plot_class_stats(group, f"{dataset_type}_{group_name}")
 
 
-def save_niigz(volume, save_path):
-    if os.path.exists(save_path):
+def save_latest_niigz_files(nii_dict, out_dir):
+    os.makedirs(out_dir, exist_ok=True)
+    for class_path, class_dict in nii_dict.items():
+        class_path_name = "/".join(class_path)
+        os.makedirs(f"{out_dir}/{class_path_name}", exist_ok=True)
+        save_niigz(
+            class_dict["mask_logits"] > 0.0,
+            save_path=f"{out_dir}/{class_path_name}/logits_pred.nii.gz",
+            overwrite=True,
+        )
+        save_niigz(
+            torch.sigmoid(class_dict["mask_logits"]),
+            save_path=f"{out_dir}/{class_path_name}/probs_pred.nii.gz",
+            overwrite=True,
+        )
+        save_niigz(
+            class_dict["mask_targets"],
+            save_path=f"{out_dir}/{class_path_name}/targets.nii.gz",
+            overwrite=True,
+        )
+        save_niigz(
+            class_dict["image"],
+            save_path=f"{out_dir}/{class_path_name}/image.nii.gz",
+            overwrite=True,
+        )
+
+
+def save_niigz(volume, save_path, overwrite=False):
+    if not overwrite and os.path.exists(save_path):
         return
-    volume_np = volume.detach().cpu().float().numpy()[0, 0]
+    volume_np = volume.detach().cpu().float().numpy()
+    volume_np = volume_np[*[0] * (len(volume_np.shape) - 3)]
     volume_nii = nib.Nifti1Image(volume_np, np.eye(4))
     nib.save(volume_nii, save_path)
     print(f"Saved volume to {save_path}")
@@ -384,6 +412,8 @@ class BaseTrainer:
         sub_paths = [Path(p).parts[:2] for p in rel_file_path]
         sub_paths_set = set(sub_paths)
 
+        nii_dict = {}
+
         rec_losses_dict = {}
         seg_losses_dict = {}
 
@@ -408,6 +438,12 @@ class BaseTrainer:
                 curr_root_seg_loss += curr_seg_loss * len(idxs)
                 seg_losses_dict[sub_path] = curr_seg_loss.detach().cpu().numpy()
 
+                nii_dict[sub_path] = {
+                    "mask_logits": mask_logits[idxs[-1]].detach().cpu(),
+                    "mask_targets": mask_targets[idxs[-1]].detach().cpu(),
+                    "image": image[idxs[-1]].detach().cpu(),
+                }
+
             rec_losses_dict[root_path] = curr_root_rec_loss / num_samples
             seg_losses_dict[root_path] = curr_root_seg_loss.detach().cpu().numpy() / num_samples
             tot_running_seg_loss += curr_root_seg_loss
@@ -423,7 +459,7 @@ class BaseTrainer:
             points_input, labels_input = self.get_points(mask_logits.detach(), mask_targets, threshold=0.5)
             if points_input is None:
                 return_loss += self.seg_loss(mask_logits, mask_targets)
-                return mask_logits, return_loss, {}, class_losses_dict
+                return mask_logits, return_loss, {}, class_losses_dict, nii_dict
 
             mask_logits = decoder_forward(
                 model, image_embeddings, mask_logits.detach(), (points_input, labels_input), boxes
@@ -437,7 +473,7 @@ class BaseTrainer:
 
             losses_dict[f"click_{num_click+1}"] = loss.item()
 
-        return mask_logits, return_loss, losses_dict, class_losses_dict
+        return mask_logits, return_loss, losses_dict, class_losses_dict, nii_dict
 
     def get_dice_score(self, mask_logits, mask_targets):
         def compute_dice(mask_pred, mask_gt):
@@ -460,6 +496,7 @@ class BaseTrainer:
         sam_model = self.model
 
         tbar = tqdm(self.train_dataloader)
+        nii_dict = {}
 
         self.optimizer.zero_grad()
         step_loss = 0
@@ -540,6 +577,7 @@ class BaseTrainer:
                 save_niigz(torch.sigmoid(xhat), save_path=f"{LOG_OUT_DIR}/niigz/train_reconstruction.nii.gz")
                 save_niigz(mask_targets, save_path=f"{LOG_OUT_DIR}/niigz/train_gt.nii.gz")
                 save_niigz(image, save_path=f"{LOG_OUT_DIR}/niigz/train_image.nii.gz")
+                save_latest_niigz_files(nii_dict, f"{LOG_OUT_DIR}/niigz/train")
 
         epoch_loss /= step + 1
         epoch_dice /= step + 1
@@ -552,6 +590,8 @@ class BaseTrainer:
         sam_model = self.model
 
         tbar = tqdm(self.val_dataloader)
+
+        nii_dict = {}
 
         epoch_dice = 0
         with torch.no_grad():
@@ -576,9 +616,11 @@ class BaseTrainer:
                     self.click_points = []
                     self.click_labels = []
 
-                    mask_logits, loss, losses_dict, class_losses_dict = self.interaction(
+                    mask_logits, loss, losses_dict, class_losses_dict, curr_nii_dict = self.interaction(
                         sam_model, image_embeddings, mask_targets, boxes, image, xhat, rel_file_path
                     )
+
+                nii_dict = nii_dict | curr_nii_dict
 
                 epoch_loss += loss.item()
                 epoch_dice += self.get_dice_score(mask_logits, mask_targets)
@@ -597,6 +639,7 @@ class BaseTrainer:
                     save_niigz(torch.sigmoid(xhat), save_path=f"{LOG_OUT_DIR}/niigz/val_reconstruction.nii.gz")
                     save_niigz(mask_targets, save_path=f"{LOG_OUT_DIR}/niigz/val_gt.nii.gz")
                     save_niigz(image, save_path=f"{LOG_OUT_DIR}/niigz/val_image.nii.gz")
+                    save_latest_niigz_files(nii_dict, f"{LOG_OUT_DIR}/niigz/val")
 
             epoch_loss /= step + 1
             epoch_dice /= step + 1
