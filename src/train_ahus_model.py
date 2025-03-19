@@ -471,10 +471,17 @@ class BaseTrainer:
         xhat,
         rel_file_path=None,
         split_filename_to_dirs=False,
+        zero_pos_weight=1e-3,
     ):
         losses_dict = {}
 
-        rec_loss = self.rec_loss(xhat, image).clamp(min=0.0, max=1.0)
+        pos_weight = torch.where(
+            torch.isclose(image, torch.zeros(image.shape, device=image.device)), zero_pos_weight, 1
+        )
+        reweighing = pos_weight.numel() / pos_weight.sum()
+        pos_weight_reweighing = pos_weight * reweighing
+
+        rec_loss = (self.rec_loss(xhat, image) * pos_weight_reweighing).clamp(min=0.0, max=1.0)
         return_loss = rec_loss.mean()
 
         losses_dict["rec"] = return_loss.item()
