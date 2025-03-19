@@ -191,6 +191,11 @@ def save_latest_niigz_files(nii_dict, out_dir):
             save_path=f"{out_dir}/{class_path_name}/image.nii.gz",
             overwrite=True,
         )
+        save_niigz(
+            torch.sigmoid(class_dict["rec"]),
+            save_path=f"{out_dir}/{class_path_name}/rec.nii.gz",
+            overwrite=True,
+        )
 
 
 def save_niigz(volume, save_path, overwrite=False):
@@ -397,7 +402,7 @@ class BaseTrainer:
         return torch.cat(self.click_points, dim=1).to(device), torch.cat(self.click_labels, dim=1).to(device)
 
     def store_class_losses_and_nii(
-        self, image, mask_logits, mask_targets, rec_loss, rel_file_path, split_filename_to_dirs
+        self, image, mask_logits, mask_targets, rec, rec_loss, rel_file_path, split_filename_to_dirs
     ):
         rec_loss_per_sample = rec_loss.mean(axis=list(range(1, len(rec_loss.shape))))
 
@@ -444,6 +449,7 @@ class BaseTrainer:
                     "mask_logits": mask_logits[idxs[-1]].detach().cpu(),
                     "mask_targets": mask_targets[idxs[-1]].detach().cpu(),
                     "image": image[idxs[-1]].detach().cpu(),
+                    "rec": rec[idxs[-1]].detach().cpu(),
                 }
 
             rec_losses_dict[root_path] = curr_root_rec_loss / num_samples
@@ -476,7 +482,7 @@ class BaseTrainer:
         mask_logits = decoder_forward(model, image_embeddings, mask_logits=None, points=None, boxes=boxes)
 
         loss, class_losses_dict, nii_dict = self.store_class_losses_and_nii(
-            image, mask_logits, mask_targets, rec_loss, rel_file_path, split_filename_to_dirs
+            image, mask_logits, mask_targets, xhat, rec_loss, rel_file_path, split_filename_to_dirs
         )
 
         return_loss += loss
