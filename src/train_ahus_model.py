@@ -662,7 +662,7 @@ class BaseTrainer:
                 loss /= self.args.accumulation_steps
 
                 save_batch_stats({f"val_{key}": value for key, value in losses_dict.items()})
-                save_class_stats("val", class_losses_dict, step + epoch * len(self.train_dataloader))
+                save_class_stats("val", class_losses_dict, step + epoch * len(self.val_dataloader))
 
                 if step % self.args.log_every_n_steps == 0:
                     plot_batch_stats()
