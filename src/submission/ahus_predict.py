@@ -195,30 +195,62 @@ class InferencePipeline:
 
         num_clicks: int = len(data["clicks"][0]["fg"]) + len(data["clicks"][0]["bg"])
         points: torch.Tensor = torch.zeros((len(data["clicks"]), num_clicks, 3), dtype=torch.float32)
-        click_types: torch.Tensor = torch.zeros((len(data["clicks"])), dtype=torch.float32)
+        click_types: torch.Tensor = torch.zeros((len(data["clicks"]), num_clicks), dtype=torch.long)
 
         for i, click in enumerate(data["clicks"]):
             all_clicks: List[Any] = click["fg"] + click["bg"]
             for j, point in enumerate(all_clicks):
                 points[i, j, :] = torch.tensor(point)
-                click_types[i] = 1 if j < len(click["fg"]) else 0
+                click_types[i, j] = 1 if j < len(click["fg"]) else 0
 
         return [points.to(self.device), click_types.to(self.device)]
 
     def _get_mask_logits(self, data: Dict[str, Any]) -> Optional[torch.Tensor]:
         mask_logits: Any = data.get("mask_logits", None)
         if mask_logits is not None:
-            mask_logits = torch.tensor(mask_logits).to(self.device)
+            mask_logits = mask_logits.to(self.device)
         return mask_logits
 
     def _get_spacing(self, data: Dict[str, Any]) -> np.ndarray:
         return np.array(data["spacing"])
 
-    def _binarize_output(self, pred: torch.Tensor, threshold: float = 0.5) -> np.ndarray:
-        pred = torch.sigmoid(pred)
-        pred = torch.cat((torch.ones_like(pred)[0:1] * threshold, pred), dim=0)
-        pred = pred.argmax(dim=0).squeeze(0)
-        return pred.cpu().numpy()
+    def _add_to_logits(
+        self, logits: torch.Tensor, box_i: torch.Tensor, box_margin: int = 1, increment: int = 1.0
+    ) -> torch.Tensor:
+        box = box_i.clone().round().int()
+        box[0] = torch.clamp(box[0] - box_margin, 0, logits.shape[-1])
+        box[1] = torch.clamp(box[1] + box_margin, 0, logits.shape[-1])
+        logits[0, box[0, 0] : box[1, 0], box[0, 1] : box[1, 1], box[0, 2] : box[1, 2]] += increment
+        return logits
+
+    def _binarize_output(
+        self,
+        pred: torch.Tensor,
+        boxes: torch.Tensor,
+        threshold: float = 0.5,
+        ensure_all_present: bool = True,
+        max_iter: int = 10,
+    ) -> np.ndarray:
+        any_vol_zero: bool = True
+        counter = 0
+        while any_vol_zero and counter < max_iter:
+            pred_prob = torch.sigmoid(pred)
+            pred_concat = torch.cat((torch.ones_like(pred)[0:1] * threshold, pred_prob), dim=0)
+            pred_long = pred_concat.argmax(dim=0).squeeze(0)
+
+            if not ensure_all_present:
+                return pred_long.cpu().numpy()
+
+            any_vol_zero = len(torch.unique(pred_long)) != pred.shape[0] + 1
+
+            present = torch.unique(pred_long)
+            for i in range(pred.shape[0]):
+                if i not in present - 1:
+                    pred[i] = self._add_to_logits(pred[i], boxes[i], increment=2**counter)
+
+            counter += 1
+
+        return pred_long.cpu().numpy()
 
     def _save_mask_logits(self, mask_logits: torch.Tensor) -> None:
         parts: List[str] = self.full_file.split(os.sep)
@@ -282,7 +314,7 @@ class InferencePipeline:
         self.log_predictions_niigz(mask_logits, image5D, boxes)
 
         mask_logits_orig_shape = self.coord_handler.backward(mask_logits)
-        binarized_pred: np.ndarray = self._binarize_output(mask_logits_orig_shape)
+        binarized_pred: np.ndarray = self._binarize_output(mask_logits_orig_shape, boxes)
 
         return binarized_pred
 
@@ -295,7 +327,7 @@ class InferencePipeline:
         img_path = os.path.join(save_dir, "img.nii.gz")
         boxes_path = os.path.join(save_dir, "boxes.nii.gz")
 
-        binarized_pred: np.ndarray = self._binarize_output(mask_logits)
+        binarized_pred: np.ndarray = self._binarize_output(mask_logits, boxes)
         lab: nib.Nifti1Image = nib.Nifti1Image(binarized_pred.astype(np.float32), np.eye(4))
         nib.save(lab, pred_path)
 
