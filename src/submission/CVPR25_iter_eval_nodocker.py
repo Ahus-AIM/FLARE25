@@ -117,6 +117,8 @@ a mandatory input.
 import os
 import subprocess
 
+from tqdm import tqdm
+
 join = os.path.join
 import argparse
 import shutil
@@ -229,7 +231,7 @@ metric["DSC_AUC"] = []
 metric["NSD_AUC"] = []
 metric["DSC_Final"] = []
 metric["NSD_Final"] = []
-n_clicks = 2
+n_clicks = 5
 time_warning = False
 
 print("Start evaluating submissions...")
@@ -237,7 +239,7 @@ print("Start evaluating submissions...")
 # To obtain the running time for each case, testing cases are inferred one-by-one
 np.random.seed(0)
 np.random.shuffle(test_cases)
-for case in test_cases:
+for case in tqdm(test_cases):
     print(f"\n##### {case} #####")
     real_running_time = 0
     dscs = []
@@ -404,6 +406,18 @@ for case in test_cases:
         print(
             f"Iter {it} Dice {dsc:.3f} NSD {nsd:.3f} Segmented {(segs > 0).sum() / (segs >= 0).sum():.3f}, Ground truth {(gts > 0).sum() / (gts >= 0).sum():.3f}"
         )
+        # calculate the volume of each bounding box
+        if it == 0 and verbose:
+            boxes = np.load(join(input_temp, case), allow_pickle=True)["boxes"]
+            for ind, box in enumerate(boxes):
+                z_min, z_max = box["z_min"], box["z_max"]
+                z_mid = box["z_mid"]
+                z_mid_x_min, z_mid_y_min = box["z_mid_x_min"], box["z_mid_y_min"]
+                z_mid_x_max, z_mid_y_max = box["z_mid_x_max"], box["z_mid_y_max"]
+                print(
+                    f"Class {ind + 1}: Vol BB {(z_max - z_min)*(z_mid_x_max - z_mid_x_min)*(z_mid_y_max - z_mid_y_min)}, Vol GT: {np.sum(gts == ind + 1)}, Vol Seg: {np.sum(segs == ind + 1)}"
+                )
+
         seg_name = case
 
         # Copy temp prediction to the final folder
