@@ -157,7 +157,9 @@ class InteractiveSegmentationEnv(EnvBase):
         true_segmentation = true_segmentation.to(self.device)
         bbox = bbox.to(self.device)
 
-        assert torch.Size((image.size(0),)) == self.batch_size, "Data batch dimension should be the same as env batch dimension"
+        assert (
+            torch.Size((image.size(0),)) == self.batch_size
+        ), "Data batch dimension should be the same as env batch dimension"
 
         image_embeddings = self.image_embedder_fn(image)
 
