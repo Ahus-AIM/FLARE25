@@ -148,12 +148,7 @@ class InteractiveSegmentationEnv(EnvBase):
         )
         self.done_spec: TensorSpec = Binary(shape=self.batch_size + done_shape, dtype=torch.bool)
 
-    def _reset(self, _) -> TensorDict:
-        # if tensordict is None:
-        #     batch_size = torch.Size()
-        # else:
-        #     batch_size = tensordict.shape
-
+    def _reset(self, tensordict, **kwargs) -> TensorDict:
         data = next(self.dataset_iter)
         image, true_segmentation, bbox = data["image"], data["label"], data["boxes"]
 
@@ -162,8 +157,7 @@ class InteractiveSegmentationEnv(EnvBase):
         true_segmentation = true_segmentation.to(self.device)
         bbox = bbox.to(self.device)
 
-        # Data batch dimension should be the same as env batch dimension
-        assert torch.Size((image.size(0),)) == self.batch_size
+        assert torch.Size((image.size(0),)) == self.batch_size, "Data batch dimension should be the same as env batch dimension"
 
         image_embeddings = self.image_embedder_fn(image)
 
