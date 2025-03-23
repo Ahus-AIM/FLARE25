@@ -2,9 +2,12 @@ from typing import List, Tuple
 
 import cupy as cp
 import torch
+from beartype import beartype
 from cucim.core.operations import morphology
+from jaxtyping import jaxtyped
 
 
+@jaxtyped(typechecker=beartype)
 def interact(prediction: torch.Tensor, gt_semantic_seg: torch.Tensor) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
     """
     Get clicks using the same method as in challenge evaluation.

@@ -1,7 +1,11 @@
-import torch
-from torch.nn import functional as F
+from beartype import beartype
+from jaxtyping import jaxtyped
+
+from custom_types import Mask, Segmentation, Threshold
 
 
-def trilinear_upsample_threshold(mask_logits: torch.Tensor, image: torch.Tensor, threshold: float) -> torch.Tensor:
-    F.interpolate(mask_logits, size=image.shape[-3:], mode="trilinear", align_corners=False)
-    return (mask_logits.sigmoid() > threshold).float()
+@jaxtyped(typechecker=beartype)
+def standard_threshold(mask_logits: Mask, threshold: Threshold) -> Segmentation:
+    # Expand threshold to have same shape as mask_logits
+    threshold = threshold.view(-1, 1, 1, 1, 1).expand_as(mask_logits)
+    return (mask_logits.sigmoid() > threshold).long()
