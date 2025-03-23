@@ -1,19 +1,20 @@
+import argparse
 from types import SimpleNamespace
-from typing import Tuple
+from typing import List, Tuple
 
 import torch
 from beartype import beartype
 from jaxtyping import jaxtyped
-from tensordict import TensorDict  # type: ignore
-from torchrl.envs.utils import check_env_specs  # type: ignore
+from tensordict import TensorDict
+from torchrl.envs.utils import check_env_specs
 
-from src.custom_types import (
+from custom_types import (
     BBox,
     Image,
     ImageEmbedderFn,
     ImageEmbedding,
     InteractionFn,
-    LowresMask,
+    Mask,
     MaskFn,
     Point,
     PointLabel,
@@ -26,38 +27,40 @@ from src.custom_types import (
     Step,
     Threshold,
 )
-from src.model.build_sam3D import sam_model_registry3D  # type: ignore
-from src.model.modeling import Sam3D
-from src.rl.mdp_env import InteractiveSegmentationEnv
-from src.train import get_dataloaders_npz  # type: ignore
-from src.utils.decode import decode_batch_low_res
-from src.utils.interact import interact
-from src.utils.postprocess import trilinear_upsample_threshold
-from src.utils.reward import compute_multi_class_dsc_nsd_batch
+from model.build_ahus_model import build_ahus_model
+from model.modeling import AhusModel
+from rl.mdp_env import InteractiveSegmentationEnv
+from train_ahus_model import get_dataloaders_npz
+from utils.decode import decoder_forward
+from utils.interact import interact
+from utils.postprocess import standard_threshold
+from utils.reward import compute_multi_class_dsc_nsd_batch
 
 
 @jaxtyped(typechecker=beartype)
-def get_image_embedder_fn(sam_model: Sam3D) -> ImageEmbedderFn:
-    def image_embedder_fn(image: Image) -> ImageEmbedding:
-        return sam_model.image_encoder(image)
+def get_image_embedder_fn(ahus_model: AhusModel) -> ImageEmbedderFn:
+    def image_embedder_fn(image: Image) -> List[ImageEmbedding]:
+        return ahus_model.image_encoder(image)
 
     return image_embedder_fn
 
 
 @jaxtyped(typechecker=beartype)
-def get_mask_fn(sam_model: Sam3D) -> MaskFn:
+def get_mask_fn(ahus_model: AhusModel) -> MaskFn:
     def mask_fn(
-        image_embedding: ImageEmbedding, bbox: BBox, points: Points, point_labels: PointLabels, low_res_mask: LowresMask
-    ) -> LowresMask:
-        return decode_batch_low_res(sam_model, image_embedding, low_res_mask, points, point_labels, bbox)
+        image_embeddings: List[ImageEmbedding], bbox: BBox, points: Points, point_labels: PointLabels, mask: Mask
+    ) -> Mask:
+        # TODO: this looks bad
+        image_embeddings = image_embeddings[::-1]
+        return decoder_forward(ahus_model, image_embeddings, mask, (points, point_labels), bbox)
 
     return mask_fn
 
 
 @jaxtyped(typechecker=beartype)
 def get_post_processing_fn() -> PostProcessingFn:
-    def post_processing_fn(image: Image, low_res_mask: LowresMask, threshold: Threshold) -> Segmentation:
-        return trilinear_upsample_threshold(low_res_mask, image, threshold)
+    def post_processing_fn(image: Image, mask: Mask, threshold: Threshold) -> Segmentation:
+        return standard_threshold(mask, threshold)
 
     return post_processing_fn
 
@@ -88,37 +91,46 @@ def get_reward_fn() -> RewardFn:
 def main():
     device = torch.device("cuda:1")
 
-    sam_model = sam_model_registry3D["vit_b_ori_norm"](checkpoint=None).to(device)
+    ahus_model = build_ahus_model()
+    ahus_model = ahus_model.to(device)
 
-    ckpt = torch.load(  # type: ignore
-        "/home/valter/Desktop/valter_ckpt_not_converged_10-03-2025.pth", map_location=device, weights_only=False
-    )
+    # checkpoint path as arg
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", type=str, required=True)
+    args = parser.parse_args()
 
-    sam_model.load_state_dict(ckpt["model_state_dict"], strict=True)
-    sam_model.requires_grad_(False)
-    sam_model.eval()
+    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
+
+    ahus_model.load_state_dict(ckpt["model_state_dict"], strict=True)
+    ahus_model.requires_grad_(False)
+    ahus_model.eval()
 
     batch_size = torch.Size((2,))
     env = InteractiveSegmentationEnv(
         n_steps=5,
-        image_embedder_fn=get_image_embedder_fn(sam_model),
-        mask_fn=get_mask_fn(sam_model),
+        image_embedder_fn=get_image_embedder_fn(ahus_model),
+        mask_fn=get_mask_fn(ahus_model),
         post_processing_fn=get_post_processing_fn(),
         interaction_fn=get_interaction_fn(),
         reward_fn=get_reward_fn(),
+        # only use training data
         dataset_iter=iter(
             get_dataloaders_npz(
                 args=SimpleNamespace(
                     base_dir="/home/valter/Desktop/3D_train_npz_random_10percent_16G",
+                    val_dir="...",
                     img_size=128,
                     batch_size=batch_size[0],
                     num_workers=4,
                 )
-            )  # type: ignore
-        ),  # type: ignore
+            )[0]
+        ),
         device=device,
         batch_size=batch_size,
+        image_shape=(128, 128, 128),  # TODO: allow for any image shape
     )
+    td = env.reset()
+    td = env.rand_step(td)
     check_env_specs(env)
 
     td: TensorDict = env.rollout(10)
