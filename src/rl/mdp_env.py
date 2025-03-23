@@ -1,4 +1,4 @@
-from typing import Iterator
+from typing import Iterator, Tuple
 
 import torch
 from tensordict import TensorDict, TensorDictBase  # type: ignore
@@ -6,10 +6,7 @@ from torchrl.data import Binary, Bounded, Composite, Unbounded  # type: ignore
 from torchrl.data.tensor_specs import TensorSpec
 from torchrl.envs import EnvBase  # type: ignore
 
-from src.custom_types import (  # highres_mask_shape,
-    IMAGE_DEPTH,
-    IMAGE_HEIGHT,
-    IMAGE_WIDTH,
+from custom_types import (  # highres_mask_shape,
     ImageEmbedderFn,
     InteractionFn,
     MaskFn,
@@ -18,19 +15,15 @@ from src.custom_types import (  # highres_mask_shape,
     RewardFn,
     bbox_shape,
     done_shape,
-    embedding_shape,
-    image_shape,
-    lowres_mask_shape,
     point_label_shape,
     point_shape,
     reward_shape,
-    segmentation_shape,
     step_shape,
     threshold_shape,
 )
 
 
-class InteractiveSegmentationEnv(EnvBase):  # type: ignore
+class InteractiveSegmentationEnv(EnvBase):
     # TODO: make env work without batched_locked
     batched_locked = True
 
@@ -45,6 +38,8 @@ class InteractiveSegmentationEnv(EnvBase):  # type: ignore
         dataset_iter: Iterator[MedicalData],
         device: torch.device,
         batch_size: torch.Size,
+        # TODO: allow for any image shape
+        image_shape: Tuple[int, int, int],
     ):
         """
         Args:
@@ -56,6 +51,7 @@ class InteractiveSegmentationEnv(EnvBase):  # type: ignore
             dataset_iter: iterator over the dataset
             device: device to use
             batch_size: batch size
+            image_shape: what the 3D shape of the images, masks and segmentations is
         """
         super().__init__(device=device, batch_size=batch_size)  # type: ignore
 
@@ -69,30 +65,48 @@ class InteractiveSegmentationEnv(EnvBase):  # type: ignore
         self.interaction_fn: InteractionFn = interaction_fn
         self.reward_fn: RewardFn = reward_fn
         self.dataset_iter: Iterator[MedicalData] = dataset_iter
+        self.image_shape = image_shape
 
         self._make_spec()
 
     def _make_spec(self):
-        # TODO
-        max_coord = max(IMAGE_DEPTH, IMAGE_WIDTH, IMAGE_HEIGHT)
+        # TODO: change hardcoded embedding shapes
+        max_coord = max(self.image_shape)
         self.observation_spec: TensorSpec = Composite(
+            # image has three channels (RGB)
             image=Bounded(
                 low=0,
                 high=1,
-                shape=self.batch_size + image_shape,
+                shape=self.batch_size + (3, *self.image_shape),
                 dtype=torch.float32,
                 domain="continuous",
             ),
-            image_embedding=Unbounded(
-                shape=self.batch_size + embedding_shape,
+            image_embedding1=Unbounded(
+                shape=self.batch_size + (16, 128, 128, 128),
+                dtype=torch.float32,
+                domain="continuous",
+            ),
+            image_embedding2=Unbounded(
+                shape=self.batch_size + (32, 64, 64, 64),
+                dtype=torch.float32,
+                domain="continuous",
+            ),
+            image_embedding3=Unbounded(
+                shape=self.batch_size + (64, 32, 32, 32),
+                dtype=torch.float32,
+                domain="continuous",
+            ),
+            image_embedding4=Unbounded(
+                shape=self.batch_size + (128, 16, 16, 16),
                 dtype=torch.float32,
                 domain="continuous",
             ),
             bbox=Bounded(
                 low=0, high=max_coord, shape=self.batch_size + bbox_shape, dtype=torch.float32, domain="continuous"
             ),
-            low_res_mask=Unbounded(
-                shape=self.batch_size + lowres_mask_shape,
+            # mask has a single channel
+            mask=Unbounded(
+                shape=self.batch_size + (1, *self.image_shape),
                 dtype=torch.float32,
                 domain="continuous",
             ),
@@ -118,7 +132,7 @@ class InteractiveSegmentationEnv(EnvBase):  # type: ignore
                 domain="discrete",
             ),
             true_segmentation=Bounded(
-                low=0, high=1, shape=self.batch_size + segmentation_shape, dtype=torch.int64, domain="discrete"
+                low=0, high=1, shape=self.batch_size + (1, *self.image_shape), dtype=torch.int64, domain="discrete"
             ),
             shape=self.batch_size,
         )
@@ -151,16 +165,17 @@ class InteractiveSegmentationEnv(EnvBase):  # type: ignore
         # Data batch dimension should be the same as env batch dimension
         assert torch.Size((image.size(0),)) == self.batch_size
 
-        image_embedding = self.image_embedder_fn(image)
+        image_embeddings = self.image_embedder_fn(image)
 
         return TensorDict(
             {
                 "image": image,
-                "image_embedding": image_embedding,
+                "image_embedding1": image_embeddings[0],
+                "image_embedding2": image_embeddings[1],
+                "image_embedding3": image_embeddings[2],
+                "image_embedding4": image_embeddings[3],
                 "bbox": bbox,
-                "low_res_mask": torch.zeros(
-                    self.batch_size + lowres_mask_shape, dtype=torch.float32, device=self.device
-                ),
+                "mask": torch.zeros(self.batch_size + (1, *self.image_shape), dtype=torch.float32, device=self.device),
                 "points": torch.zeros(
                     self.batch_size + (self.n_steps,) + point_shape, dtype=torch.int64, device=self.device
                 ),
@@ -183,11 +198,16 @@ class InteractiveSegmentationEnv(EnvBase):  # type: ignore
         # NOTE: we assume that "step" is the same for each batch item
         step: int = tensordict["step"][0]
         new_low_res_mask = self.mask_fn(
-            tensordict["image_embedding"],
+            [
+                tensordict["image_embedding1"],
+                tensordict["image_embedding2"],
+                tensordict["image_embedding3"],
+                tensordict["image_embedding4"],
+            ],
             tensordict["bbox"],
             tensordict["points"][..., :step, :],
             tensordict["point_labels"][..., :step],
-            tensordict["low_res_mask"],
+            tensordict["mask"],
         )
 
         # Always use upsampling method 0 for now
@@ -208,9 +228,12 @@ class InteractiveSegmentationEnv(EnvBase):  # type: ignore
         return TensorDict(
             {
                 "image": tensordict["image"],
-                "image_embedding": tensordict["image_embedding"],
+                "image_embedding1": tensordict["image_embedding1"],
+                "image_embedding2": tensordict["image_embedding2"],
+                "image_embedding3": tensordict["image_embedding3"],
+                "image_embedding4": tensordict["image_embedding4"],
                 "bbox": tensordict["bbox"],
-                "low_res_mask": new_low_res_mask,
+                "mask": new_low_res_mask,
                 "points": new_points,
                 "point_labels": new_point_labels,
                 "step": tensordict["step"] + 1,
