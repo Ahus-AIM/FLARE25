@@ -1,3 +1,4 @@
+import argparse
 import os
 
 import nibabel as nib
@@ -94,8 +95,11 @@ def resample_volume(npz, full_path, image_size=128, save_nii_gz=False):
 
 
 if __name__ == "__main__":
-    walk_dir = "/data/drive_data/3D_train_npz_random_10percent_16G/MR/MR_WMH_FLAIR"
-    for root, dirs, files in tqdm.tqdm(os.walk(walk_dir)):
+    # let walkdir be an argument
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dir", type=str, required=True)
+    args = parser.parse_args()
+    for root, dirs, files in tqdm.tqdm(os.walk(args.dir)):
         num_instances = []
         shapes = []
         for file in files:
