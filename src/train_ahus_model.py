@@ -14,12 +14,13 @@ import nibabel as nib
 import torch
 import torch.multiprocessing as mp
 from monai.losses import DiceCELoss
+from monai.transforms import CropForeground
 from torch.backends import cudnn
 from tqdm import tqdm
 
-from src.dataset.npz_dataset import NPZDataset
+from src.dataset.npz_dataset import NPZDataset, create_weighted_sampler
 from src.model.build_ahus_model import model_registry
-from src.transform.transform import Compose, CropOrPad, Flip
+from monai.transforms import CropForeground
 from src.utils.decode import decoder_forward
 from src.utils.interact import interact
 
@@ -27,20 +28,21 @@ from src.utils.interact import interact
 parser = argparse.ArgumentParser()
 parser.add_argument("--task_name", type=str, default="union_train")
 parser.add_argument("--click_type", type=str, default="random")
-parser.add_argument("--model_type", type=str, default="vit_b_ori")
+parser.add_argument("--model_type", type=str, default="ahus_model")
 parser.add_argument("--checkpoint", type=str, default="ckpt/sam_med3d.pth")
 parser.add_argument("--device", type=str, default="cuda")
 parser.add_argument("--work_dir", type=str, default="work_dir")
 parser.add_argument("--num_clicks", type=int, default=5)
 parser.add_argument("--last_click_loss_weight", type=int, default=1)
-parser.add_argument("--base_dir", type=str, default="/data/drive_data/3D_train_npz_random_10percent_16G")
+parser.add_argument("--base_dir", type=str, default="/data/drive_data/3D_train_npz_random_10percent_16G_original")
 parser.add_argument("--val_dir", type=str, default="/data/3D_val_npz")
 parser.add_argument("--log_every_n_steps", type=int, default=20)
 parser.add_argument("--dry_run", action="store_true", default=False)
 parser.add_argument("--load_encoder_vit_path", type=str, default="")
+parser.add_argument("--size_threshold", type=int, default=256**3)
 
 # train
-parser.add_argument("--num_workers", type=int, default=24)
+parser.add_argument("--num_workers", type=int, default=8)
 parser.add_argument("--gpu_ids", type=int, nargs="+", default=[0, 1])
 parser.add_argument("--multi_gpu", action="store_true", default=False)
 parser.add_argument("--resume", action="store_true", default=False)
@@ -52,7 +54,7 @@ parser.add_argument("--step_size", type=list, default=[120, 180])
 parser.add_argument("--gamma", type=float, default=0.1)
 parser.add_argument("--num_epochs", type=int, default=10_000)
 parser.add_argument("--img_size", type=int, default=128)
-parser.add_argument("--batch_size", type=int, default=12)
+parser.add_argument("--batch_size", type=int, default=1)
 parser.add_argument("--accumulation_steps", type=int, default=20)
 parser.add_argument("--lr", type=float, default=8e-4)
 parser.add_argument("--weight_decay", type=float, default=0.0)
@@ -213,31 +215,38 @@ def build_model(args):
 
 
 def get_dataloaders_npz(args):
+    transform = CropForeground(select_fn=lambda x: x > 0, k_divisible=8)
+
     train_dataset = NPZDataset(
         base_dir=args.base_dir,
-        transform=Compose([CropOrPad((args.img_size, args.img_size, args.img_size)), Flip()]),
+        transform=transform,
+        size_threshold=args.size_threshold,
+        data_suffix="npz",
     )
-
+    train_sampler = create_weighted_sampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        shuffle=True,
         num_workers=args.num_workers,
         pin_memory=True,
         persistent_workers=True,
+        sampler=train_sampler,
     )
 
     val_dataset = NPZDataset(
         base_dir=args.val_dir,
-        transform=Compose([CropOrPad((args.img_size, args.img_size, args.img_size))]),
+        transform=transform,
+        size_threshold=args.size_threshold,
         load_n_first=500,
+        data_suffix="npz",
     )
+    val_sampler = create_weighted_sampler(val_dataset)
     val_dataloader = torch.utils.data.DataLoader(
         val_dataset,
-        batch_size=args.batch_size // 2,
-        shuffle=False,
+        batch_size=args.batch_size,
         num_workers=args.num_workers,
         persistent_workers=True,
+        sampler=val_sampler,
     )
 
     return train_dataloader, val_dataloader
