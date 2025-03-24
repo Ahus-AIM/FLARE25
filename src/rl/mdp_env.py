@@ -6,7 +6,7 @@ from torchrl.data import Binary, Bounded, Composite, Unbounded  # type: ignore
 from torchrl.data.tensor_specs import TensorSpec
 from torchrl.envs import EnvBase  # type: ignore
 
-from custom_types import (  # highres_mask_shape,
+from src.custom_types import (  # highres_mask_shape,
     ImageEmbedderFn,
     InteractionFn,
     MaskFn,
