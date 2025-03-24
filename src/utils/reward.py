@@ -6,8 +6,12 @@ from beartype import beartype
 from jaxtyping import jaxtyped
 from scipy.integrate import cumulative_trapezoid
 
-from custom_types import Segmentation
-from utils.surface_dice import compute_dice_coefficient, compute_surface_dice_at_tolerance, compute_surface_distances
+from src.custom_types import Segmentation
+from src.utils.surface_dice import (
+    compute_dice_coefficient,
+    compute_surface_dice_at_tolerance,
+    compute_surface_distances,
+)
 
 
 def compute_multi_class_dsc(gt: torch.Tensor, seg: torch.Tensor) -> torch.Tensor:
