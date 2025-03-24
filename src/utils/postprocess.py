@@ -1,7 +1,7 @@
 from beartype import beartype
 from jaxtyping import jaxtyped
 
-from custom_types import Mask, Segmentation, Threshold
+from src.custom_types import Mask, Segmentation, Threshold
 
 
 @jaxtyped(typechecker=beartype)

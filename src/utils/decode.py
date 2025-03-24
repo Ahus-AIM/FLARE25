@@ -4,8 +4,8 @@ import torch
 from beartype import beartype
 from jaxtyping import jaxtyped
 
-from custom_types import ImageEmbedding, Mask, PointLabels, Points
-from model.modeling import AhusModel
+from src.custom_types import ImageEmbedding, Mask, PointLabels, Points
+from src.model.modeling import AhusModel
 
 
 @jaxtyped(typechecker=beartype)
