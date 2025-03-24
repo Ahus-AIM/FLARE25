@@ -17,11 +17,11 @@ from monai.losses import DiceCELoss
 from torch.backends import cudnn
 from tqdm import tqdm
 
-from dataset.npz_dataset import NPZDataset
-from model.build_ahus_model import model_registry
-from transform.transform import Compose, CropOrPad, Flip
-from utils.decode import decoder_forward
-from utils.interact import interact
+from src.dataset.npz_dataset import NPZDataset
+from src.model.build_ahus_model import model_registry
+from src.transform.transform import Compose, CropOrPad, Flip
+from src.utils.decode import decoder_forward
+from src.utils.interact import interact
 
 # set up parser
 parser = argparse.ArgumentParser()
