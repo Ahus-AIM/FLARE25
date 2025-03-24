@@ -12,6 +12,8 @@ jobs:
         sudo chown -R $(whoami) .git/
         sudo chmod -R u+rwX .git/
     - name: Install dependencies
-      run: python3.12 -m pip install -r requirements.txt
+      run: |
+        python3.12 -m pip install --upgrade pip
+        python3.12 -m pip install --no-cache-dir -r requirements.txt
     - name: Run pytests
       run: timeout 900 python3.12 -m pytest
