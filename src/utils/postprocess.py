@@ -1,10 +1,9 @@
 from beartype import beartype
 from jaxtyping import jaxtyped
 
-from custom_types import Mask, Segmentation, Threshold
+from src.custom_types import Mask, Segmentation, Threshold
 
 
-# TODO: use interpolate?
 @jaxtyped(typechecker=beartype)
 def standard_threshold(mask_logits: Mask, threshold: Threshold) -> Segmentation:
     # Expand threshold to have same shape as mask_logits

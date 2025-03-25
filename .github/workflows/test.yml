@@ -1,0 +1,19 @@
+name: Run pytests
+on: [push]
+jobs:
+  test:
+    runs-on: self-hosted
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        python-version: '3.12'
+    - name: Fix permissions for Git
+      run: |
+        sudo chown -R $(whoami) .git/
+        sudo chmod -R u+rwX .git/
+    - name: Install dependencies
+      run: |
+        python3.12 -m pip install --upgrade pip
+        python3.12 -m pip install --no-cache-dir -r requirements.txt
+    - name: Run pytests
+      run: timeout 900 python3.12 -m pytest

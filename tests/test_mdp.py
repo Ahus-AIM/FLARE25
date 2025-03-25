@@ -1,4 +1,4 @@
-import argparse
+import os
 from types import SimpleNamespace
 from typing import List, Tuple
 
@@ -8,7 +8,7 @@ from jaxtyping import jaxtyped
 from tensordict import TensorDict
 from torchrl.envs.utils import check_env_specs
 
-from custom_types import (
+from src.custom_types import (
     BBox,
     Image,
     ImageEmbedderFn,
@@ -27,14 +27,14 @@ from custom_types import (
     Step,
     Threshold,
 )
-from model.build_ahus_model import build_ahus_model
-from model.modeling import AhusModel
-from rl.mdp_env import InteractiveSegmentationEnv
-from train_ahus_model import get_dataloaders_npz
-from utils.decode import decoder_forward
-from utils.interact import interact
-from utils.postprocess import standard_threshold
-from utils.reward import compute_multi_class_dsc_nsd_batch
+from src.model.build_ahus_model import build_ahus_model
+from src.model.modeling import AhusModel
+from src.rl.mdp_env import InteractiveSegmentationEnv
+from src.train_ahus_model import get_dataloaders_npz
+from src.utils.decode import decoder_forward
+from src.utils.interact import interact
+from src.utils.postprocess import standard_threshold
+from src.utils.reward import compute_multi_class_dsc_nsd_batch
 
 
 @jaxtyped(typechecker=beartype)
@@ -88,24 +88,35 @@ def get_reward_fn() -> RewardFn:
     return reward_fn
 
 
-def main():
-    device = torch.device("cuda:1")
+def test_mdp_no_errors():
+    """
+    Tests whether the MDP environment can be created without errors. Assumes that the data path is stored in the
+    environment variable MEDSEG_DATA_PATH.
+    """
+    device = torch.device("cuda")
 
     ahus_model = build_ahus_model()
     ahus_model = ahus_model.to(device)
 
-    # checkpoint path as arg
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", type=str, required=True)
-    args = parser.parse_args()
+    # We don't load a checkpoint since we don't care about performance for this test
 
-    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
-
-    ahus_model.load_state_dict(ckpt["model_state_dict"], strict=True)
     ahus_model.requires_grad_(False)
     ahus_model.eval()
 
     batch_size = torch.Size((2,))
+    data_path = os.getenv("MEDSEG_DATA_PATH")
+    print(f"{data_path=}")
+    dataloaders = get_dataloaders_npz(
+        args=SimpleNamespace(
+            base_dir=data_path,
+            val_dir="...",
+            img_size=128,
+            batch_size=batch_size[0],
+            num_workers=4,
+        )
+    )
+    print(f"{dataloaders=}")
+    dataset_iter = iter(dataloaders[0])
     env = InteractiveSegmentationEnv(
         n_steps=5,
         image_embedder_fn=get_image_embedder_fn(ahus_model),
@@ -114,17 +125,7 @@ def main():
         interaction_fn=get_interaction_fn(),
         reward_fn=get_reward_fn(),
         # only use training data
-        dataset_iter=iter(
-            get_dataloaders_npz(
-                args=SimpleNamespace(
-                    base_dir="/home/valter/Desktop/3D_train_npz_random_10percent_16G",
-                    val_dir="...",
-                    img_size=128,
-                    batch_size=batch_size[0],
-                    num_workers=4,
-                )
-            )[0]
-        ),
+        dataset_iter=dataset_iter,
         device=device,
         batch_size=batch_size,
         image_shape=(128, 128, 128),  # TODO: allow for any image shape
@@ -134,9 +135,3 @@ def main():
     check_env_specs(env)
 
     td: TensorDict = env.rollout(10)
-
-    print(td)
-
-
-if __name__ == "__main__":
-    main()
