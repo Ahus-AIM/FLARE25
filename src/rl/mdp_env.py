@@ -77,7 +77,7 @@ class InteractiveSegmentationEnv(EnvBase):
             image=Bounded(
                 low=0,
                 high=1,
-                shape=self.batch_size + (3, *self.image_shape),
+                shape=self.batch_size + (1, *self.image_shape),
                 dtype=torch.float32,
                 domain="continuous",
             ),
@@ -93,7 +93,6 @@ class InteractiveSegmentationEnv(EnvBase):
             ),
             image_embedding3=Unbounded(
                 shape=self.batch_size + (64, 32, 32, 32),
-                shape=self.batch_size + (3, *self.image_shape),
                 dtype=torch.float32,
                 domain="continuous",
             ),
@@ -103,7 +102,11 @@ class InteractiveSegmentationEnv(EnvBase):
                 domain="continuous",
             ),
             bbox=Bounded(
-                low=0, high=max_coord, shape=self.batch_size + bbox_shape, dtype=torch.float32, domain="continuous"
+                low=0,
+                high=max_coord,
+                shape=self.batch_size + bbox_shape,
+                dtype=torch.float32,
+                domain="continuous",
             ),
             # mask has a single channel
             mask=Unbounded(
@@ -133,19 +136,29 @@ class InteractiveSegmentationEnv(EnvBase):
                 domain="discrete",
             ),
             true_segmentation=Bounded(
-                low=0, high=1, shape=self.batch_size + (1, *self.image_shape), dtype=torch.int64, domain="discrete"
+                low=0,
+                high=1,
+                shape=self.batch_size + (1, *self.image_shape),
+                dtype=torch.int64,
+                domain="discrete",
             ),
             shape=self.batch_size,
         )
         self.action_spec: TensorSpec = Composite(
             # sampling_method=Categorical(3, shape=(), dtype=torch.int64),
             threshold=Bounded(
-                low=0, high=1, shape=self.batch_size + threshold_shape, dtype=torch.float32, domain="continuous"
+                low=0,
+                high=1,
+                shape=self.batch_size + threshold_shape,
+                dtype=torch.float32,
+                domain="continuous",
             ),
             shape=self.batch_size,
         )
         self.reward_spec: TensorSpec = Unbounded(
-            shape=self.batch_size + reward_shape, dtype=torch.float32, domain="continuous"
+            shape=self.batch_size + reward_shape,
+            dtype=torch.float32,
+            domain="continuous",
         )
         self.done_spec: TensorSpec = Binary(shape=self.batch_size + done_shape, dtype=torch.bool)
 
@@ -172,16 +185,29 @@ class InteractiveSegmentationEnv(EnvBase):
                 "image_embedding3": image_embeddings[2],
                 "image_embedding4": image_embeddings[3],
                 "bbox": bbox,
-                "mask": torch.zeros(self.batch_size + (1, *self.image_shape), dtype=torch.float32, device=self.device),
+                "mask": torch.zeros(
+                    self.batch_size + (1, *self.image_shape),
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
                 "points": torch.zeros(
-                    self.batch_size + (self.n_steps,) + point_shape, dtype=torch.int64, device=self.device
+                    self.batch_size + (self.n_steps,) + point_shape,
+                    dtype=torch.int64,
+                    device=self.device,
                 ),
                 "point_labels": torch.zeros(
-                    self.batch_size + (self.n_steps,) + point_label_shape, dtype=torch.int64, device=self.device
+                    self.batch_size + (self.n_steps,) + point_label_shape,
+                    dtype=torch.int64,
+                    device=self.device,
                 ),
                 "step": torch.zeros(self.batch_size + step_shape, dtype=torch.int64, device=self.device),
                 "true_segmentation": true_segmentation,
-                "done": torch.full(self.batch_size + done_shape, False, dtype=torch.bool, device=self.device),
+                "done": torch.full(
+                    self.batch_size + done_shape,
+                    False,
+                    dtype=torch.bool,
+                    device=self.device,
+                ),
             },
             batch_size=self.batch_size,
             device=self.device,

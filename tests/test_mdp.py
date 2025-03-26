@@ -2,6 +2,7 @@ import os
 from types import SimpleNamespace
 from typing import List, Tuple
 
+import cupy as cp
 import torch
 from beartype import beartype
 from jaxtyping import jaxtyped
@@ -100,7 +101,8 @@ def test_mdp_no_errors():
     Tests whether the MDP environment can be created without errors. Assumes that the data path is stored in the
     environment variable MEDSEG_DATA_PATH.
     """
-    device = torch.device("cuda")
+    cp.cuda.set_allocator(None)
+    device = torch.device("cpu")
 
     ahus_model = build_ahus_model()
     ahus_model = ahus_model.to(device)
@@ -122,7 +124,6 @@ def test_mdp_no_errors():
             num_workers=4,
         )
     )
-    print(f"{dataloaders=}")
     dataset_iter = iter(dataloaders[0])
     env = InteractiveSegmentationEnv(
         n_steps=5,
@@ -142,3 +143,7 @@ def test_mdp_no_errors():
     check_env_specs(env)
 
     td: TensorDict = env.rollout(10)
+
+
+if __name__ == "__main__":
+    test_mdp_no_errors()
