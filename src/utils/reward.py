@@ -2,8 +2,16 @@ from typing import Tuple
 
 import numpy as np
 import torch
+from beartype import beartype
+from jaxtyping import jaxtyped
 from scipy.integrate import cumulative_trapezoid
-from surface_dice import compute_dice_coefficient, compute_surface_dice_at_tolerance, compute_surface_distances
+
+from src.custom_types import Segmentation
+from src.utils.surface_dice import (
+    compute_dice_coefficient,
+    compute_surface_dice_at_tolerance,
+    compute_surface_distances,
+)
 
 
 def compute_multi_class_dsc(gt: torch.Tensor, seg: torch.Tensor) -> torch.Tensor:
@@ -48,8 +56,10 @@ def compute_multi_class_dsc_nsd(
     return dsc_tensor, nsd_tensor
 
 
+# NOTE: This function returns Rewards, but the last dimension is missing
+@jaxtyped(typechecker=beartype)
 def compute_multi_class_dsc_nsd_batch(
-    gt: torch.Tensor, seg: torch.Tensor, spacing: torch.Tensor, tolerance: float = 2.0
+    gt: Segmentation, seg: Segmentation, spacing: torch.Tensor, tolerance: float = 2.0
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     assert gt.shape == seg.shape, "Input tensors must have the same shape"
     assert gt.ndim == 5, "Expected input shape (B, 1, H, W, D)"
@@ -61,7 +71,11 @@ def compute_multi_class_dsc_nsd_batch(
 
 
 def get_rewards(
-    gt: torch.Tensor, seg: torch.Tensor, spacing: torch.Tensor, tolerance: float = 2.0, num_clicks: int = 5
+    gt: torch.Tensor,
+    seg: torch.Tensor,
+    spacing: torch.Tensor,
+    tolerance: float = 2.0,
+    num_clicks: int = 5,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     assert seg.shape[1] == num_clicks + 1, "Expected input shape (B, num_clicks + 1, H, W, D)"
     dscs = torch.zeros((seg.shape[0], num_clicks + 1), device=gt.device)

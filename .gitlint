@@ -21,9 +21,13 @@ ignore-merge-commits=true
 # Enable debug mode (prints more output). Disabled by default
 debug=true
 
+[ignore-by-title]
+regex=^Merge(.*)into(.*)
+
 # Set the extra-path where gitlint will search for user defined rules
 # See https://jorisroovers.github.io/gitlint/user_defined_rules for details
 # extra-path=examples/
+
 
 [title-max-length]
 line-length=70

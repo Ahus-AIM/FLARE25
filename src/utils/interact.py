@@ -1,10 +1,11 @@
 from typing import List, Tuple
 
-import cupy as cp
 import torch
-from cucim.core.operations import morphology
+from beartype import beartype
+from jaxtyping import jaxtyped
 
 
+@jaxtyped(typechecker=beartype)
 def interact(prediction: torch.Tensor, gt_semantic_seg: torch.Tensor) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
     """
     Get clicks using the same method as in challenge evaluation.
@@ -53,9 +54,31 @@ def interact(prediction: torch.Tensor, gt_semantic_seg: torch.Tensor) -> Tuple[L
     return batch_points, batch_labels
 
 
+import cupy as cp
+import numpy as np
+from scipy.ndimage import distance_transform_edt
+
+# def compute_largest_error_point(error_mask: torch.Tensor) -> Tuple[int, int, int]:
+#     if error_mask.is_cuda:
+#         error_mask_converted = cp.from_dlpack(torch.utils.dlpack.to_dlpack(error_mask))
+#     else:
+#         error_mask_converted = error_mask.numpy()  # Convert to NumPy
+#     # edt = morphology.distance_transform_edt(error_mask_converted)
+#     edt = distance_transform_edt(error_mask_converted)
+#     center = cp.unravel_index(cp.argmax(edt), edt.shape)
+
+#     return (int(center[0]), int(center[1]), int(center[2]))
+
+
 def compute_largest_error_point(error_mask: torch.Tensor) -> Tuple[int, int, int]:
-    error_mask_cp = cp.from_dlpack(torch.utils.dlpack.to_dlpack(error_mask))
-    edt_cp = morphology.distance_transform_edt(error_mask_cp)
-    center = cp.unravel_index(cp.argmax(edt_cp), edt_cp.shape)
+    if torch.cuda.is_available():
+        error_mask_cp = cp.from_dlpack(torch.utils.dlpack.to_dlpack(error_mask.to("cuda")))
+        edt_cp = cp.asarray(distance_transform_edt(cp.asnumpy(error_mask_cp)))
+        center = cp.unravel_index(cp.argmax(edt_cp), edt_cp.shape)
+    else:
+        error_mask_np = error_mask.cpu().numpy()
+        edt_np = distance_transform_edt(error_mask_np)
+        center = np.unravel_index(np.argmax(edt_np), edt_np.shape)
+        center = np.unravel_index(np.argmax(edt_np), edt_np.shape)
 
     return (int(center[0]), int(center[1]), int(center[2]))
