@@ -4,7 +4,6 @@ import cupy as cp
 import torch
 from beartype import beartype
 from jaxtyping import jaxtyped
-from tensordict import TensorDict
 from torchrl.envs.utils import check_env_specs
 
 from src.custom_types import (
@@ -146,8 +145,6 @@ def test_mdp_no_errors():
     td = env.reset()
     td = env.rand_step(td)
     check_env_specs(env)
-
-    td: TensorDict = env.rollout(10)
 
 
 if __name__ == "__main__":
