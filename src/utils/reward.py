@@ -71,7 +71,11 @@ def compute_multi_class_dsc_nsd_batch(
 
 
 def get_rewards(
-    gt: torch.Tensor, seg: torch.Tensor, spacing: torch.Tensor, tolerance: float = 2.0, num_clicks: int = 5
+    gt: torch.Tensor,
+    seg: torch.Tensor,
+    spacing: torch.Tensor,
+    tolerance: float = 2.0,
+    num_clicks: int = 5,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     assert seg.shape[1] == num_clicks + 1, "Expected input shape (B, num_clicks + 1, H, W, D)"
     dscs = torch.zeros((seg.shape[0], num_clicks + 1), device=gt.device)
