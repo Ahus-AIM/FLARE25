@@ -373,12 +373,8 @@ def compute_surface_distances(mask_gt, mask_pred, spacing_mm):
     # the resultsing arrays are spacially shifted by minus half a voxel in each axis.
     # i.e. the points are located at the corners of the original voxels
     kernel = np.array([[[128, 64], [32, 16]], [[8, 4], [2, 1]]])
-    neighbour_code_map_gt = scipy.ndimage.filters.correlate(
-        cropmask_gt.astype(np.uint8), kernel, mode="constant", cval=0
-    )
-    neighbour_code_map_pred = scipy.ndimage.filters.correlate(
-        cropmask_pred.astype(np.uint8), kernel, mode="constant", cval=0
-    )
+    neighbour_code_map_gt = scipy.ndimage.correlate(cropmask_gt.astype(np.uint8), kernel, mode="constant", cval=0)
+    neighbour_code_map_pred = scipy.ndimage.correlate(cropmask_pred.astype(np.uint8), kernel, mode="constant", cval=0)
 
     # create masks with the surface voxels
     borders_gt = (neighbour_code_map_gt != 0) & (neighbour_code_map_gt != 255)
@@ -386,12 +382,12 @@ def compute_surface_distances(mask_gt, mask_pred, spacing_mm):
 
     # compute the distance transform (closest distance of each voxel to the surface voxels)
     if borders_gt.any():
-        distmap_gt = scipy.ndimage.morphology.distance_transform_edt(~borders_gt, sampling=spacing_mm)
+        distmap_gt = scipy.ndimage.distance_transform_edt(~borders_gt, sampling=spacing_mm)
     else:
         distmap_gt = np.Inf * np.ones(borders_gt.shape)
 
     if borders_pred.any():
-        distmap_pred = scipy.ndimage.morphology.distance_transform_edt(~borders_pred, sampling=spacing_mm)
+        distmap_pred = scipy.ndimage.distance_transform_edt(~borders_pred, sampling=spacing_mm)
     else:
         distmap_pred = np.Inf * np.ones(borders_pred.shape)
 
