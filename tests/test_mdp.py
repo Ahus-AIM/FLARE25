@@ -4,7 +4,9 @@ import cupy as cp
 import torch
 from beartype import beartype
 from jaxtyping import jaxtyped
+from torchrl.envs import check_env_specs
 
+from rl.mdp_env import InteractiveSegmentationEnv
 from src.custom_types import (
     BBox,
     Image,
