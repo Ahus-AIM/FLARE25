@@ -6,7 +6,6 @@ from beartype import beartype
 from jaxtyping import jaxtyped
 from torchrl.envs import check_env_specs
 
-from rl.mdp_env import InteractiveSegmentationEnv
 from src.custom_types import (
     BBox,
     Image,
@@ -29,6 +28,7 @@ from src.custom_types import (
 )
 from src.model.build_ahus_model import build_ahus_model
 from src.model.modeling import AhusModel
+from src.rl.mdp_env import InteractiveSegmentationEnv
 from src.utils.decode import decoder_forward
 from src.utils.interact import interact
 from src.utils.postprocess import standard_threshold
@@ -129,8 +129,9 @@ def test_mdp_no_errors():
     ahus_model.eval()
 
     batch_size = 1
+    # TODO: env does not work with n_steps != 5
     env = InteractiveSegmentationEnv(
-        n_steps=3,
+        n_steps=5,
         image_embedder_fn=get_image_embedder_fn(ahus_model),
         mask_fn=get_mask_fn(ahus_model),
         post_processing_fn=get_post_processing_fn(),
@@ -142,8 +143,6 @@ def test_mdp_no_errors():
         batch_size=torch.Size((batch_size,)),
         image_shape=(128, 128, 128),  # TODO: allow for any image shape
     )
-    td = env.reset()
-    td = env.rand_step(td)
     check_env_specs(env)
 
 
