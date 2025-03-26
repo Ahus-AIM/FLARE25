@@ -30,9 +30,7 @@ def compute_multi_class_nsd(
     for i in torch.unique(gt)[1:]:  # skip bg
         gt_i = (gt == i).detach().cpu().numpy()
         seg_i = (seg == i).detach().cpu().numpy()
-        surface_distance = compute_surface_distances(
-            gt_i, seg_i, spacing_mm=spacing.detach().cpu().numpy()
-        )
+        surface_distance = compute_surface_distances(gt_i, seg_i, spacing_mm=spacing.detach().cpu().numpy())
         nsd.append(compute_surface_dice_at_tolerance(surface_distance, tolerance))
     return torch.tensor(np.mean(nsd)).to(gt.device)
 
@@ -47,9 +45,7 @@ def compute_multi_class_dsc_nsd(
     for i in torch.unique(gt)[1:]:  # skip bg
         gt_i = (gt[0] == i).detach().cpu().numpy()
         seg_i = (seg[0] == i).detach().cpu().numpy()
-        surface_distance = compute_surface_distances(
-            gt_i, seg_i, spacing_mm=spacing.detach().cpu().numpy()
-        )
+        surface_distance = compute_surface_distances(gt_i, seg_i, spacing_mm=spacing.detach().cpu().numpy())
         nsd.append(compute_surface_dice_at_tolerance(surface_distance, tolerance))
         dsc.append(compute_dice_coefficient(gt_i, seg_i))
     dsc_tensor = torch.tensor(np.mean(dsc)).to(gt.device)
@@ -70,9 +66,7 @@ def compute_multi_class_dsc_nsd_batch(
     dsc = torch.zeros(gt.shape[0], device=gt.device)
     nsd = torch.zeros(gt.shape[0], device=gt.device)
     for i in range(gt.shape[0]):
-        dsc[i], nsd[i] = compute_multi_class_dsc_nsd(
-            gt[i], seg[i], spacing[i], tolerance
-        )
+        dsc[i], nsd[i] = compute_multi_class_dsc_nsd(gt[i], seg[i], spacing[i], tolerance)
     return dsc, nsd
 
 
@@ -83,15 +77,11 @@ def get_rewards(
     tolerance: float = 2.0,
     num_clicks: int = 5,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    assert seg.shape[1] == num_clicks + 1, (
-        "Expected input shape (B, num_clicks + 1, H, W, D)"
-    )
+    assert seg.shape[1] == num_clicks + 1, "Expected input shape (B, num_clicks + 1, H, W, D)"
     dscs = torch.zeros((seg.shape[0], num_clicks + 1), device=gt.device)
     nsds = torch.zeros((seg.shape[0], num_clicks + 1), device=gt.device)
     for click in range(num_clicks + 1):
-        dsc, nsd = compute_multi_class_dsc_nsd_batch(
-            gt, seg[:, click : click + 1], spacing, tolerance
-        )
+        dsc, nsd = compute_multi_class_dsc_nsd_batch(gt, seg[:, click : click + 1], spacing, tolerance)
         dscs[:, click] = dsc
         nsds[:, click] = nsd
     dsc_auc = cumulative_trapezoid(dscs.numpy(), axis=1)[:, -1] / (num_clicks)

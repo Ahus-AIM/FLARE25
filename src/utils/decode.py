@@ -17,7 +17,5 @@ def decoder_forward(
     boxes: Optional[torch.Tensor] = None,
 ) -> Mask:
     sparse_emb, dense_emb = model.prompt_encoder(points, boxes, mask_logits)
-    mask_logits = model.mask_decoder(
-        image_embeddings, model.prompt_encoder.get_dense_pe(), sparse_emb, dense_emb
-    )
+    mask_logits = model.mask_decoder(image_embeddings, model.prompt_encoder.get_dense_pe(), sparse_emb, dense_emb)
     return mask_logits

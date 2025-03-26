@@ -48,7 +48,11 @@ def get_image_embedder_fn(ahus_model: AhusModel) -> ImageEmbedderFn:
 @jaxtyped(typechecker=beartype)
 def get_mask_fn(ahus_model: AhusModel) -> MaskFn:
     def mask_fn(
-        image_embeddings: List[ImageEmbedding], bbox: BBox, points: Points, point_labels: PointLabels, mask: Mask
+        image_embeddings: List[ImageEmbedding],
+        bbox: BBox,
+        points: Points,
+        point_labels: PointLabels,
+        mask: Mask,
     ) -> Mask:
         # TODO: this looks bad
         image_embeddings = image_embeddings[::-1]
@@ -81,7 +85,10 @@ def get_reward_fn() -> RewardFn:
     # TODO: use step
     def reward_fn(seg: Segmentation, true_seg: Segmentation, step: Step) -> Reward:
         dsc_tensor, nsd_tensor = compute_multi_class_dsc_nsd_batch(
-            true_seg, seg, spacing=torch.ones(seg.shape[0], 3, dtype=torch.float32), tolerance=2.0
+            true_seg,
+            seg,
+            spacing=torch.ones(seg.shape[0], 3, dtype=torch.float32),
+            tolerance=2.0,
         )
         return (dsc_tensor + nsd_tensor).unsqueeze(-1)
 
