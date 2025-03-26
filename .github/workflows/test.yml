@@ -16,4 +16,4 @@ jobs:
         python3.12 -m pip install --upgrade pip
         python3.12 -m pip install --no-cache-dir -r requirements.txt
     - name: Run pytests
-      run: timeout 3600 python3.12 -m pytest
+      run: timeout 3600 python3.12 -m pytest -vv --durations=10
