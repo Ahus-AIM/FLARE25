@@ -1,6 +1,4 @@
-import os
-from types import SimpleNamespace
-from typing import List, Tuple
+from typing import Iterator, List, Tuple
 
 import cupy as cp
 import torch
@@ -17,6 +15,7 @@ from src.custom_types import (
     InteractionFn,
     Mask,
     MaskFn,
+    MedicalData,
     Point,
     PointLabel,
     PointLabels,
@@ -31,7 +30,6 @@ from src.custom_types import (
 from src.model.build_ahus_model import build_ahus_model
 from src.model.modeling import AhusModel
 from src.rl.mdp_env import InteractiveSegmentationEnv
-from src.train_ahus_model import get_dataloaders_npz
 from src.utils.decode import decoder_forward
 from src.utils.interact import interact
 from src.utils.postprocess import standard_threshold
@@ -96,6 +94,25 @@ def get_reward_fn() -> RewardFn:
     return reward_fn
 
 
+class MockDatasetIter(Iterator[MedicalData]):
+    def __init__(self, batch_size: int):
+        self.batch_size = batch_size
+
+    def __iter(self):
+        return self
+
+    def __next__(self):
+        image: Image = torch.rand(self.batch_size, 1, 128, 128, 128)
+        boxes: BBox = torch.rand(self.batch_size, 2, 3)
+        label: Segmentation = torch.randint(0, 2, (self.batch_size, 1, 128, 128, 128), dtype=torch.int64)
+        medical_data: MedicalData = {
+            "image": image,
+            "boxes": boxes,
+            "label": label,
+        }
+        return medical_data
+
+
 def test_mdp_no_errors():
     """
     Tests whether the MDP environment can be created without errors. Assumes that the data path is stored in the
@@ -112,19 +129,7 @@ def test_mdp_no_errors():
     ahus_model.requires_grad_(False)
     ahus_model.eval()
 
-    batch_size = torch.Size((2,))
-    data_path = os.getenv("MEDSEG_DATA_PATH")
-    print(f"{data_path=}")
-    dataloaders = get_dataloaders_npz(
-        args=SimpleNamespace(
-            base_dir=data_path,
-            val_dir="...",
-            img_size=128,
-            batch_size=batch_size[0],
-            num_workers=4,
-        )
-    )
-    dataset_iter = iter(dataloaders[0])
+    batch_size = 2
     env = InteractiveSegmentationEnv(
         n_steps=5,
         image_embedder_fn=get_image_embedder_fn(ahus_model),
@@ -133,9 +138,9 @@ def test_mdp_no_errors():
         interaction_fn=get_interaction_fn(),
         reward_fn=get_reward_fn(),
         # only use training data
-        dataset_iter=dataset_iter,
+        dataset_iter=MockDatasetIter(batch_size=batch_size),
         device=device,
-        batch_size=batch_size,
+        batch_size=torch.Size((batch_size,)),
         image_shape=(128, 128, 128),  # TODO: allow for any image shape
     )
     td = env.reset()
