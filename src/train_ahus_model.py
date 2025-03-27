@@ -23,53 +23,14 @@ from src.model.build_ahus_model import model_registry
 from src.utils.decode import decoder_forward
 from src.utils.interact import interact
 
-# set up parser
-parser = argparse.ArgumentParser()
-parser.add_argument("--task_name", type=str, default="union_train")
-parser.add_argument("--click_type", type=str, default="challenge")
-parser.add_argument("--model_type", type=str, default="ahus_model_sinusoidal")
-parser.add_argument("--checkpoint", type=str, default="ckpt/sam_med3d.pth")
-parser.add_argument("--device", type=str, default="cuda")
-parser.add_argument("--work_dir", type=str, default="work_dir")
-parser.add_argument("--num_clicks", type=int, default=2)
-parser.add_argument("--last_click_loss_weight", type=int, default=1)
-parser.add_argument("--base_dir", type=str, default="/data/drive_data/3D_train_npz_random_10percent_16G_original")
-parser.add_argument("--val_dir", type=str, default="/data/3D_val_npz")
-parser.add_argument("--log_every_n_steps", type=int, default=50)
-parser.add_argument("--dry_run", action="store_true", default=False)
-parser.add_argument("--size_threshold", type=int, default=128 * 128 * 128)
-
-# train
-parser.add_argument("--num_workers", type=int, default=4)
-parser.add_argument("--gpu_ids", type=int, nargs="+", default=[0, 1])
-parser.add_argument("--resume", action="store_true", default=False)
-parser.add_argument("--allow_partial_weight", action="store_true", default=False)
-
-# lr_scheduler
-parser.add_argument("--lr_scheduler", type=str, default="multisteplr")
-parser.add_argument("--step_size", type=list, default=[120, 180])
-parser.add_argument("--gamma", type=float, default=0.1)
-parser.add_argument("--num_epochs", type=int, default=10_000)
-parser.add_argument("--batch_size", type=int, default=1)
-parser.add_argument("--accumulation_steps", type=int, default=1)
-parser.add_argument("--lr", type=float, default=8e-4)
-parser.add_argument("--weight_decay", type=float, default=0.0)
-parser.add_argument("--port", type=int, default=12361)
-
-args = parser.parse_args()
-
-device = args.device
-os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(i) for i in args.gpu_ids])
-logger = logging.getLogger(__name__)
-LOG_OUT_DIR = join(args.work_dir, args.task_name)
+LOGGING_DICT = {}
+CLASS_STATS_DICT = {"train": {}, "val": {}}
+LOG_OUT_DIR = "log_dir"
+MODEL_SAVE_PATH = "model_save_path"
 click_methods = {
     "challenge": interact,
 }
-MODEL_SAVE_PATH = join(args.work_dir, args.task_name)
-os.makedirs(MODEL_SAVE_PATH, exist_ok=True)
-
-LOGGING_DICT = {}
-CLASS_STATS_DICT = {"train": {}, "val": {}}
+logger = logging.getLogger(__name__)
 
 
 def save_batch_stats(losses_dict):
@@ -207,7 +168,7 @@ def save_niigz(volume, save_path, overwrite=False):
 
 
 def build_model(args):
-    return model_registry[args.model_type]().to(device)
+    return model_registry[args.model_type]().to(args.device)
 
 
 def get_dataloaders_npz(args):
@@ -377,6 +338,7 @@ class BaseTrainer:
 
     def get_points(self, mask_logits, mask_targets, threshold=0.5):
         prediction = (torch.sigmoid(mask_logits) > threshold).long()
+        device = prediction.device
         batch_points, batch_labels = click_methods[self.args.click_type](prediction, mask_targets)
 
         if len(batch_points) != mask_logits.shape[0]:
@@ -493,8 +455,8 @@ class BaseTrainer:
             mask_logits = decoder_forward(model, image_embeddings, mask_logits, (points_input, labels_input), boxes)
             loss = self.seg_loss(mask_logits, mask_targets)
 
-            if num_click == args.num_clicks - 1:
-                return_loss += args.last_click_loss_weight * loss
+            if num_click == self.args.num_clicks - 1:
+                return_loss += self.args.last_click_loss_weight * loss
             else:
                 return_loss += loss
 
@@ -521,6 +483,7 @@ class BaseTrainer:
         epoch_loss = 0
         self.model.train()
         model = self.model
+        device = next(model.parameters()).device
 
         tbar = tqdm(self.train_dataloader)
         nii_dict = {}
@@ -531,6 +494,10 @@ class BaseTrainer:
         for step, data3D in enumerate(tbar):
             if self.args.dry_run and (step > 2):
                 break
+
+            if self.args.profile and (step > 10):
+                print("Profiling finished.")
+                return
 
             try:
                 image, mask_targets, boxes, rel_file_path = (
@@ -595,7 +562,7 @@ class BaseTrainer:
                 if print_loss < self.step_best_loss:
                     self.step_best_loss = print_loss
 
-            if step % self.args.log_every_n_steps == 0:
+            if step % self.args.log_every_n_steps == 0 and not self.args.profile:
                 plot_batch_stats()
                 plot_class_stats()
                 os.makedirs(f"{LOG_OUT_DIR}/niigz", exist_ok=True)
@@ -615,6 +582,7 @@ class BaseTrainer:
         epoch_loss = 0
         self.model.eval()
         model = self.model
+        device = next(model.parameters()).device
 
         tbar = tqdm(self.val_dataloader)
 
@@ -748,7 +716,9 @@ def device_config(args):
         raise ValueError(f"Invalid device argument: {e}")
 
 
-def main():
+def main(args, train=True):
+    os.makedirs(LOG_OUT_DIR, exist_ok=True)
+    os.makedirs(MODEL_SAVE_PATH, exist_ok=True)
     mp.set_sharing_strategy("file_system")
     device_config(args)
 
@@ -762,8 +732,49 @@ def main():
     # Create trainer
     trainer = BaseTrainer(model, dataloaders, args)
     # Train
-    trainer.train()
+    if train:
+        trainer.train()
+    return trainer
 
 
 if __name__ == "__main__":
-    main()
+    # set up parser
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--task_name", type=str, default="union_train")
+    parser.add_argument("--click_type", type=str, default="challenge")
+    parser.add_argument("--model_type", type=str, default="ahus_model_sinusoidal")
+    parser.add_argument("--checkpoint", type=str, default="ckpt/sam_med3d.pth")
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--work_dir", type=str, default="work_dir")
+    parser.add_argument("--num_clicks", type=int, default=2)
+    parser.add_argument("--last_click_loss_weight", type=int, default=1)
+    parser.add_argument("--base_dir", type=str, default="/data/drive_data/3D_train_npz_random_10percent_16G_original")
+    parser.add_argument("--val_dir", type=str, default="/data/3D_val_npz")
+    parser.add_argument("--log_every_n_steps", type=int, default=50)
+    parser.add_argument("--dry_run", action="store_true", default=False)
+    parser.add_argument("--profile", action="store_true", default=False)
+    parser.add_argument("--size_threshold", type=int, default=128 * 128 * 128)
+
+    # train
+    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--gpu_ids", type=int, nargs="+", default=[0, 1])
+    parser.add_argument("--resume", action="store_true", default=False)
+    parser.add_argument("--allow_partial_weight", action="store_true", default=False)
+
+    # lr_scheduler
+    parser.add_argument("--lr_scheduler", type=str, default="multisteplr")
+    parser.add_argument("--step_size", type=list, default=[120, 180])
+    parser.add_argument("--gamma", type=float, default=0.1)
+    parser.add_argument("--num_epochs", type=int, default=10_000)
+    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--accumulation_steps", type=int, default=1)
+    parser.add_argument("--lr", type=float, default=8e-4)
+    parser.add_argument("--weight_decay", type=float, default=0.0)
+    parser.add_argument("--port", type=int, default=12361)
+
+    args = parser.parse_args()
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join([str(i) for i in args.gpu_ids])
+    LOG_OUT_DIR = join(args.work_dir, args.task_name)
+    MODEL_SAVE_PATH = join(args.work_dir, args.task_name)
+    main(args)
