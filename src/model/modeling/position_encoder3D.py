@@ -29,13 +29,11 @@ class PositionEmbeddingRandom3D(PositionEncoder3D):
     Positional encoding using random spatial frequencies.
     """
 
-    def __init__(self, num_pos_feats: int = 64, scale: Optional[float] = None) -> None:
+    def __init__(self, embed_dim: int, num_heads: Optional[int] = None) -> None:
         super().__init__()
-        if scale is None or scale <= 0.0:
-            scale = 1.0
         self.register_buffer(
             "positional_encoding_gaussian_matrix",
-            scale * torch.randn((3, num_pos_feats)),
+            torch.randn((3, embed_dim // 2)),
         )
 
     def _pe_encoding(self, coords: torch.Tensor) -> torch.Tensor:
