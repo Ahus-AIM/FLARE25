@@ -12,7 +12,7 @@ from src.model.modeling import AhusModel
 def decoder_forward(
     model: AhusModel,
     image_embeddings: List[ImageEmbedding],
-    mask_logits: Mask,
+    mask_logits: Mask | None = None,
     points: Optional[Tuple[Points, PointLabels]] = None,
     boxes: Optional[torch.Tensor] = None,
 ) -> Mask:

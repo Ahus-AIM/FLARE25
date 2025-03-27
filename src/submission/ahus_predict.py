@@ -288,7 +288,7 @@ class InferencePipeline:
                 self.model,
                 batch_image_embeddings,
                 mask_logits=mask_logits[batch_slice] if mask_logits is not None else None,
-                points=[p[batch_slice] for p in points] if points is not None else None,
+                points=tuple(p[batch_slice] for p in points) if points is not None else None,
                 boxes=batch_boxes,
             )
             mask_logits_list.append(mask_logits_batch.cpu())
