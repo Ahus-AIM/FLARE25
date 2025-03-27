@@ -325,6 +325,7 @@ class NormalizedMaskDecoder3D(nn.Module):
             mlp_dim=embed_dim * 4,
             activation=activation,
             num_heads=8,
+            attention_downsample_rate=1,
         )
         kernel_size, padding, stride = aniso_kernel((2, 2, 2))
         self.dsdepth = 1
