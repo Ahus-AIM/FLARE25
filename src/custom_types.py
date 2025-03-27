@@ -1,7 +1,7 @@
 from collections.abc import Callable
-from typing import List, Tuple, TypedDict
 
 import torch
+from beartype.typing import List, Tuple, TypedDict
 from jaxtyping import Float, Integer
 from torch import Tensor
 

@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from beartype.typing import List, Optional, Tuple
 
 import torch
 from beartype import beartype
