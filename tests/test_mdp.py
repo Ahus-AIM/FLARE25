@@ -26,7 +26,7 @@ from src.custom_types import (
     Step,
     Threshold,
 )
-from src.model.build_ahus_model import build_ahus_model
+from src.model.build_ahus_model import model_registry
 from src.model.modeling import AhusModel
 from src.rl.mdp_env import InteractiveSegmentationEnv
 from src.utils.decode import decoder_forward
@@ -120,7 +120,7 @@ def test_mdp_no_errors():
     cp.cuda.set_allocator(None)
     device = torch.device("cpu")
 
-    ahus_model = build_ahus_model()
+    ahus_model = model_registry["ahus_model_liere"]()
     ahus_model = ahus_model.to(device)
 
     # We don't load a checkpoint since we don't care about performance for this test

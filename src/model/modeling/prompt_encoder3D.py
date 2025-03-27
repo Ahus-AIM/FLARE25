@@ -1,10 +1,10 @@
-from typing import Any, Optional, Tuple, Type
+from typing import Optional, Tuple
 
-import numpy as np
 import torch
 from torch import nn
 
 from .common import NormLayer3D
+from .position_encoder3D import PositionEncoder3D
 
 
 class DownscaleBlock3D(nn.Module):
@@ -25,6 +25,54 @@ class DownscaleBlock3D(nn.Module):
         return self.block(x)
 
 
+class MultiClickEmbedding(nn.Module):
+    def __init__(self, embed_dim, num_points, pad=False):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_points = num_points
+        self.pad = pad
+
+        self.point_embeddings = nn.ModuleList([nn.Embedding(1, embed_dim) for i in range(self.num_points)])
+
+    def get_device(self) -> torch.device:
+        return self.point_embeddings[0].weight.device
+
+    def forward(self, points: torch.Tensor, labels: torch.Tensor, pad: bool) -> torch.Tensor:
+        points = points + 0.5  # Shift to center of pixel
+        if pad:
+            padding_point = torch.zeros((points.shape[0], 1, 3), device=points.device)
+            padding_label = -torch.ones((labels.shape[0], 1), device=labels.device)
+            points = torch.cat([points, padding_point], dim=1)
+            labels = torch.cat([labels, padding_label], dim=1)
+        point_embedding = torch.zeros((points.shape[0], points.shape[1], self.embed_dim), device=points.device)
+        for i in range(self.num_points):
+            point_embedding[labels == i] += self.point_embeddings[i].weight
+        return point_embedding
+
+
+class BoxEmbedding(nn.Module):
+    def __init__(self, embed_dim, num_points, pad=False):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_points = num_points
+        self.pad = pad
+
+        self.box_embedding = nn.ModuleList([nn.Embedding(1, embed_dim) for i in range(self.num_points)])
+
+    def get_device(self) -> torch.device:
+        return self.box_embedding[0].weight.device
+
+    def forward(self, boxes: torch.Tensor) -> torch.Tensor:
+        assert boxes.shape[2] == 3, f"Expected boxes to have shape Bx2x3, got {boxes.shape}"
+        assert boxes.shape[1] == 2, f"Expected boxes to have shape Bx2x3, got {boxes.shape}"
+
+        boxes = boxes + 0.5  # Shift to center of pixel
+        corner_embedding = torch.zeros((boxes.shape[0], boxes.shape[1], self.embed_dim), device=boxes.device)
+        corner_embedding[:, 0, :] += self.box_embedding[0].weight
+        corner_embedding[:, 1, :] += self.box_embedding[1].weight
+        return corner_embedding
+
+
 class PromptEncoder3D(nn.Module):
     def __init__(
         self,
@@ -32,34 +80,20 @@ class PromptEncoder3D(nn.Module):
         prev_mask_downscaling_factor: int,
         image_embedding_size: Tuple[int, int, int],
         input_image_size: Tuple[int, int, int],
-        activation: Type[nn.Module],
         init_filters: int,
+        position_encoder: PositionEncoder3D,
     ) -> None:
-        """
-        Encodes prompts for input to SAM's mask decoder.
-
-        Arguments:
-          embed_dim (int): The prompts' embedding dimension
-          image_embedding_size (tuple(int, int)): The spatial size of the
-            image embedding, as (H, W).
-          input_image_size (int): The padded size of the image as input
-            to the image encoder, as (H, W).
-          activation (nn.Module): The activation to use when encoding
-            input masks.
-        """
         super().__init__()
         self.embed_dim = embed_dim
         self.input_image_size = input_image_size
         self.image_embedding_size = image_embedding_size
-        self.pe_layer = PositionEmbeddingRandom3D(embed_dim // 3)
+        self.position_encoder = position_encoder
 
         self.num_point_embeddings: int = 2  # pos/neg point
-        point_embeddings = [nn.Embedding(1, embed_dim) for i in range(self.num_point_embeddings)]
-        self.point_embeddings = nn.ModuleList(point_embeddings)
+        self.point_embeddings = MultiClickEmbedding(embed_dim, self.num_point_embeddings)
 
         self.num_corner_embeddings: int = 2  # box corners
-        corner_embeddings = [nn.Embedding(1, embed_dim) for i in range(self.num_corner_embeddings)]
-        self.corner_embeddings = nn.ModuleList(corner_embeddings)
+        self.corner_embeddings = BoxEmbedding(embed_dim, self.num_corner_embeddings)
 
         downscale_layers = torch.log2(torch.tensor(prev_mask_downscaling_factor)).int().item()
 
@@ -72,34 +106,11 @@ class PromptEncoder3D(nn.Module):
 
         self.no_mask_embed = nn.Embedding(1, embed_dim)
 
-    def get_dense_pe(self) -> torch.Tensor:
-        return self.pe_layer(self.image_embedding_size).unsqueeze(0)  # 1xXxYxZ
+    def get_dense_pe_term(self, batch_size: int) -> Optional[torch.Tensor]:
+        return self.position_encoder.compute_dense_pe_term(batch_size, self.image_embedding_size)  # 1xXxYxZ
 
-    def _embed_points(
-        self,
-        points: torch.Tensor,
-        labels: torch.Tensor,
-        pad: bool,
-    ) -> torch.Tensor:
-        points = points + 0.5  # Shift to center of pixel
-        if pad:
-            padding_point = torch.zeros((points.shape[0], 1, 3), device=points.device)
-            padding_label = -torch.ones((labels.shape[0], 1), device=labels.device)
-            points = torch.cat([points, padding_point], dim=1)
-            labels = torch.cat([labels, padding_label], dim=1)
-        point_embedding = self.pe_layer.forward_with_coords(points, self.input_image_size)
-        point_embedding[labels == 0] += self.point_embeddings[0].weight
-        point_embedding[labels == 1] += self.point_embeddings[1].weight
-        return point_embedding
-
-    def _embed_boxes(self, boxes: torch.Tensor) -> torch.Tensor:
-        boxes = boxes + 0.5  # Shift to center of pixel
-        assert boxes.shape[2] == 3, f"Expected boxes to have shape Bx2x3, got {boxes.shape}"
-        assert boxes.shape[1] == 2, f"Expected boxes to have shape Bx2x3, got {boxes.shape}"
-        corner_embedding = self.pe_layer.forward_with_coords(boxes, self.input_image_size)
-        corner_embedding[:, 0, :] += self.corner_embeddings[0].weight
-        corner_embedding[:, 1, :] += self.corner_embeddings[1].weight
-        return corner_embedding
+    def get_dense_pe_factor(self, batch_size: int) -> Optional[torch.Tensor]:
+        return self.position_encoder.compute_dense_pe_factor(batch_size, self.image_embedding_size)  # 1xXxYxZ
 
     def _embed_masks(self, masks: torch.Tensor) -> torch.Tensor:
         mask_embedding = self.mask_downscaling(masks)
@@ -124,7 +135,7 @@ class PromptEncoder3D(nn.Module):
             return 1
 
     def _get_device(self) -> torch.device:
-        return self.point_embeddings[0].weight.device
+        return self.point_embeddings.get_device()
 
     def forward(
         self,
@@ -151,66 +162,44 @@ class PromptEncoder3D(nn.Module):
         """
         bs = self._get_batch_size(points, boxes, masks)
         sparse_embeddings = torch.empty((bs, 0, self.embed_dim), device=self._get_device())
+        sparse_embeddings_pe_term = None
+        sparse_embeddings_pe_factor = None
+
+        point_embeddings = None
+        coords, labels = None, None
         if points is not None:
             coords, labels = points
-            point_embeddings = self._embed_points(coords, labels, pad=(boxes is None))
-            sparse_embeddings = torch.cat([sparse_embeddings, point_embeddings], dim=1)
-        if boxes is not None:
-            box_embeddings = self._embed_boxes(boxes)
-            sparse_embeddings = torch.cat([sparse_embeddings, box_embeddings], dim=1)
+            point_embeddings = self.point_embeddings(coords, labels, pad=(boxes is None))
+
+        box_embeddings = self.corner_embeddings(boxes) if boxes is not None else None
+
+        for click_object, embeddings, coords in zip(
+            [boxes, points], [point_embeddings, box_embeddings], [coords, boxes]
+        ):
+            if embeddings is None:
+                continue
+
+            sparse_embeddings = torch.cat([sparse_embeddings, embeddings], dim=1)
+
+            pe_term = self.position_encoder.compute_point_pe_term(coords, self.input_image_size)
+            if pe_term is not None:
+                sparse_embeddings_pe_term = (
+                    torch.cat([sparse_embeddings_pe_term, pe_term], dim=1)
+                    if sparse_embeddings_pe_term is not None
+                    else pe_term
+                )
+
+            pe_factor = self.position_encoder.compute_point_pe_factor(coords)
+            if pe_factor is not None:
+                sparse_embeddings_pe_factor = (
+                    torch.cat([sparse_embeddings_pe_factor, pe_factor], dim=1)
+                    if sparse_embeddings_pe_factor is not None
+                    else pe_factor
+                )
 
         if masks is not None:
             dense_embeddings = self._embed_masks(masks)
         else:
             dense_embeddings = torch.tensor(0.0, device=self._get_device())
 
-        return sparse_embeddings, dense_embeddings
-
-
-class PositionEmbeddingRandom3D(nn.Module):
-    """
-    Positional encoding using random spatial frequencies.
-    """
-
-    def __init__(self, num_pos_feats: int = 64, scale: Optional[float] = None) -> None:
-        super().__init__()
-        if scale is None or scale <= 0.0:
-            scale = 1.0
-        self.register_buffer(
-            "positional_encoding_gaussian_matrix",
-            scale * torch.randn((3, num_pos_feats)),
-        )
-
-    def _pe_encoding(self, coords: torch.Tensor) -> torch.Tensor:
-        """Positionally encode points that are normalized to [0,1]."""
-        # assuming coords are in [0, 1]^2 square and have d_1 x ... x d_n x 2 shape
-        coords = 2 * coords - 1
-        coords = coords @ self.positional_encoding_gaussian_matrix
-        coords = 2 * np.pi * coords
-        # outputs d_1 x ... x d_n x C shape
-        pe_encoding = torch.cat([torch.sin(coords), torch.cos(coords), torch.sin(coords)], dim=-1)
-        pe_encoding = torch.cat([pe_encoding, torch.zeros_like(pe_encoding[..., :2])], dim=-1)
-        return pe_encoding
-
-    def forward(self, size: Tuple[int, int, int]) -> torch.Tensor:
-        """Generate positional encoding for a grid of the specified size."""
-        x, y, z = size
-        device: Any = self.positional_encoding_gaussian_matrix.device
-        grid = torch.ones((x, y, z), device=device, dtype=torch.float32)
-        y_embed = grid.cumsum(dim=0) - 0.5
-        x_embed = grid.cumsum(dim=1) - 0.5
-        z_embed = grid.cumsum(dim=2) - 0.5
-        y_embed = y_embed / y
-        x_embed = x_embed / x
-        z_embed = z_embed / z
-
-        pe = self._pe_encoding(torch.stack([x_embed, y_embed, z_embed], dim=-1))
-        return pe.permute(3, 0, 1, 2)  # C x X x Y x Z
-
-    def forward_with_coords(self, coords_input: torch.Tensor, image_size: Tuple[int, int, int]) -> torch.Tensor:
-        """Positionally encode points that are not normalized to [0,1]."""
-        coords = coords_input.clone()
-        coords[:, :, 0] = coords[:, :, 0] / image_size[0]
-        coords[:, :, 1] = coords[:, :, 1] / image_size[1]
-        coords[:, :, 2] = coords[:, :, 2] / image_size[2]
-        return self._pe_encoding(coords.to(torch.float))  # B x N x C
+        return sparse_embeddings, sparse_embeddings_pe_term, sparse_embeddings_pe_factor, dense_embeddings
