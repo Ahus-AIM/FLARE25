@@ -566,6 +566,7 @@ class BaseTrainer:
                 plot_batch_stats()
                 plot_class_stats()
                 os.makedirs(f"{LOG_OUT_DIR}/niigz", exist_ok=True)
+            if step % (self.args.log_every_n_steps * 20) == 0 and not self.args.profile:
                 save_niigz(mask_logits > 0.0, save_path=f"{LOG_OUT_DIR}/niigz/train_pred.nii.gz")
                 save_niigz(torch.sigmoid(mask_logits), save_path=f"{LOG_OUT_DIR}/niigz/train_pred_probs.nii.gz")
                 save_niigz(torch.sigmoid(xhat), save_path=f"{LOG_OUT_DIR}/niigz/train_reconstruction.nii.gz")
@@ -636,6 +637,7 @@ class BaseTrainer:
                     plot_batch_stats()
                     plot_class_stats()
                     os.makedirs(f"{LOG_OUT_DIR}/niigz", exist_ok=True)
+                if step % (self.args.log_every_n_steps * 20) == 0:
                     save_niigz(mask_logits > 0.0, save_path=f"{LOG_OUT_DIR}/niigz/val_pred.nii.gz")
                     save_niigz(torch.sigmoid(mask_logits), save_path=f"{LOG_OUT_DIR}/niigz/val_pred_probs.nii.gz")
                     save_niigz(torch.sigmoid(xhat), save_path=f"{LOG_OUT_DIR}/niigz/val_reconstruction.nii.gz")
