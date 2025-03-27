@@ -8,6 +8,10 @@ weights/*
 __pycache__/*
 *.pyc
 .vscode
+src/scripts/tmp_folders*
+inputs/*
+outputs/*
+demo_seg/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
