@@ -11,13 +11,13 @@ class PositionEncoder3D(nn.Module):
     def forward(self, x: torch.Tensor, position: Optional[torch.Tensor] = None) -> torch.Tensor:
         raise NotImplementedError
 
-    def compute_dense_pe_term(self, batch_size: int, image_size: Tuple[int, int, int]) -> torch.Tensor:
+    def compute_dense_pe_term(self, batch_size: int, spatial_dims: Tuple[int, int, int]) -> torch.Tensor:
         raise NotImplementedError
 
-    def compute_dense_pe_factor(self, batch_size: int, image_size: Tuple[int, int, int]) -> torch.Tensor:
+    def compute_dense_pe_factor(self, batch_size: int, spatial_dims: Tuple[int, int, int]) -> torch.Tensor:
         raise NotImplementedError
 
-    def compute_point_pe_term(self, position: torch.Tensor, image_size: Tuple[int, int, int]) -> torch.Tensor:
+    def compute_point_pe_term(self, position: torch.Tensor, spatial_dims: Tuple[int, int, int]) -> torch.Tensor:
         raise NotImplementedError
 
     def compute_point_pe_factor(self, position: torch.Tensor) -> None:
@@ -40,7 +40,7 @@ class PositionEmbeddingRandom3D(PositionEncoder3D):
 
     def _pe_encoding(self, coords: torch.Tensor) -> torch.Tensor:
         """Positionally encode points that are normalized to [0,1]."""
-        # assuming coords are in [0, 1]^2 square and have d_1 x ... x d_n x 2 shape
+        assert torch.all(coords >= 0) and torch.all(coords <= 1), "Position should be normalized to [0, 1]."
         coords = 2 * coords - 1
         coords = coords @ self.positional_encoding_gaussian_matrix
         coords = 2 * torch.pi * coords
@@ -53,38 +53,38 @@ class PositionEmbeddingRandom3D(PositionEncoder3D):
         x, y, z = size
         device: Any = self.positional_encoding_gaussian_matrix.device
         grid = torch.ones((x, y, z), device=device, dtype=torch.float32)
-        y_embed = grid.cumsum(dim=0) - 0.5
-        x_embed = grid.cumsum(dim=1) - 0.5
+        x_embed = grid.cumsum(dim=0) - 0.5
+        y_embed = grid.cumsum(dim=1) - 0.5
         z_embed = grid.cumsum(dim=2) - 0.5
-        y_embed = y_embed / y
         x_embed = x_embed / x
+        y_embed = y_embed / y
         z_embed = z_embed / z
 
         pe = self._pe_encoding(torch.stack([x_embed, y_embed, z_embed], dim=-1))
         return pe.permute(3, 0, 1, 2)  # C x X x Y x Z
 
-    def _forward_with_coords(self, coords_input: torch.Tensor, image_size: Tuple[int, int, int]) -> torch.Tensor:
+    def _forward_with_coords(self, coords_input: torch.Tensor, spatial_dims: Tuple[int, int, int]) -> torch.Tensor:
         """Positionally encode points that are not normalized to [0,1]."""
         coords = coords_input.clone()
-        coords[:, :, 0] = coords[:, :, 0] / image_size[0]
-        coords[:, :, 1] = coords[:, :, 1] / image_size[1]
-        coords[:, :, 2] = coords[:, :, 2] / image_size[2]
+        coords[:, :, 0] = coords[:, :, 0] / spatial_dims[0]
+        coords[:, :, 1] = coords[:, :, 1] / spatial_dims[1]
+        coords[:, :, 2] = coords[:, :, 2] / spatial_dims[2]
         return self._pe_encoding(coords.to(torch.float))  # B x N x C
 
-    def compute_dense_pe_term(self, batch_size: int, image_size: Tuple[int, int, int]) -> torch.Tensor:
-        pe = self(image_size)
+    def compute_dense_pe_term(self, batch_size: int, spatial_dims: Tuple[int, int, int]) -> torch.Tensor:
+        pe = self(spatial_dims)
         return pe.unsqueeze(0).repeat(
             batch_size,
             *[1] * len(pe.shape),
         )  # batch x seq x embed_dim x embed_dim
 
-    def compute_dense_pe_factor(self, batch_size: int, image_size: Tuple[int, int, int]) -> None:
+    def compute_dense_pe_factor(self, batch_size: int, spatial_dims: Tuple[int, int, int]) -> None:
         return None
 
-    def compute_point_pe_term(self, position: torch.Tensor, image_size: Tuple[int, int, int]) -> torch.Tensor:
-        return self._forward_with_coords(position, image_size)
+    def compute_point_pe_term(self, position: torch.Tensor, spatial_dims: Tuple[int, int, int]) -> torch.Tensor:
+        return self._forward_with_coords(position, spatial_dims)
 
-    def compute_point_pe_factor(self, position: torch.Tensor) -> None:
+    def compute_point_pe_factor(self, position: torch.Tensor, spatial_dims: Tuple[int, int, int]) -> None:
         return None
 
 
@@ -122,18 +122,19 @@ class SkewSymmetricPositionEncoder(PositionEncoder3D):
         return skew_symmetric_matrix
 
     def _compute_rotary_matrix(self, position: torch.Tensor) -> torch.Tensor:
+        assert torch.all(position >= 0) and torch.all(position <= 1), "Position should be normalized to [0, 1]."
         skew_symmetric_matrix = self.calculate_skew_symmetric_matrix(self.parameter).clone()
         pos_sum = (position.unsqueeze(-1).unsqueeze(-1) * skew_symmetric_matrix).sum(dim=-3)
         rot_mat = torch.matrix_exp(pos_sum)
         return rot_mat  # batch x num_points x embed_dim x embed_dim
 
-    def compute_dense_pe_term(self, batch_size: int, image_size: Tuple[int, int, int]) -> None:
+    def compute_dense_pe_term(self, batch_size: int, spatial_dims: Tuple[int, int, int]) -> None:
         return None
 
-    def compute_dense_pe_factor(self, batch_size: int, image_size: Tuple[int, int, int]) -> torch.Tensor:
+    def compute_dense_pe_factor(self, batch_size: int, spatial_dims: Tuple[int, int, int]) -> torch.Tensor:
         coordinates = (
-            torch.cartesian_prod(*[torch.arange(s, device=self.parameter.device) for s in image_size]) + 0.5
-        ) / 16
+            torch.cartesian_prod(*[torch.arange(s, device=self.parameter.device) for s in spatial_dims]) + 0.5
+        ) / max(spatial_dims)
 
         rot_mat = self._compute_rotary_matrix(coordinates)
         return rot_mat.unsqueeze(0).repeat(
@@ -141,10 +142,11 @@ class SkewSymmetricPositionEncoder(PositionEncoder3D):
             *[1] * len(rot_mat.shape),
         )  # batch x seq x embed_dim x embed_dim
 
-    def compute_point_pe_term(self, position: torch.Tensor, image_size: Tuple[int, int, int]) -> None:
+    def compute_point_pe_term(self, position: torch.Tensor, spatial_dims: Tuple[int, int, int]) -> None:
         return None
 
-    def compute_point_pe_factor(self, position: torch.Tensor) -> torch.Tensor:
+    def compute_point_pe_factor(self, position: torch.Tensor, spatial_dims: Tuple[int, int, int]) -> torch.Tensor:
+        position = (position + 0.5) / max(spatial_dims)
         return self._compute_rotary_matrix(position)
 
 

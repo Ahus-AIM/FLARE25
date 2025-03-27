@@ -24,8 +24,6 @@ def build_ahus_model(position_encoder_class: PositionEncoder3D) -> AhusModel:
     prompt_encoder = PromptEncoder3D(
         embed_dim=embed_dim,
         prev_mask_downscaling_factor=8,
-        image_embedding_size=(16, 16, 16),
-        input_image_size=(128, 128, 128),
         init_filters=init_filters,
         position_encoder=position_encoder,
     )
@@ -34,7 +32,6 @@ def build_ahus_model(position_encoder_class: PositionEncoder3D) -> AhusModel:
         depth=2,
         num_heads=num_heads,
         out_chans=1,
-        input_size=16,
         activation=nn.SiLU,
         init_filters=init_filters,
         blocks_up=blocks_up,

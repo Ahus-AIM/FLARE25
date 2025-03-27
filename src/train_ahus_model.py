@@ -14,12 +14,12 @@ import nibabel as nib
 import torch
 import torch.multiprocessing as mp
 from monai.losses import DiceCELoss
+from monai.transforms import CropForeground
 from torch.backends import cudnn
 from tqdm import tqdm
 
 from src.dataset.npz_dataset import NPZDataset, create_weighted_sampler
 from src.model.build_ahus_model import model_registry
-from monai.transforms import CropForeground
 from src.utils.decode import decoder_forward
 from src.utils.interact import interact
 
@@ -27,22 +27,21 @@ from src.utils.interact import interact
 parser = argparse.ArgumentParser()
 parser.add_argument("--task_name", type=str, default="union_train")
 parser.add_argument("--click_type", type=str, default="challenge")
-parser.add_argument("--model_type", type=str, default="ahus_model")
+parser.add_argument("--model_type", type=str, default="ahus_model_sinusoidal")
 parser.add_argument("--checkpoint", type=str, default="ckpt/sam_med3d.pth")
 parser.add_argument("--device", type=str, default="cuda")
 parser.add_argument("--work_dir", type=str, default="work_dir")
-parser.add_argument("--num_clicks", type=int, default=5)
+parser.add_argument("--num_clicks", type=int, default=2)
 parser.add_argument("--last_click_loss_weight", type=int, default=1)
 parser.add_argument("--base_dir", type=str, default="/data/drive_data/3D_train_npz_random_10percent_16G_original")
 parser.add_argument("--val_dir", type=str, default="/data/3D_val_npz")
-parser.add_argument("--log_every_n_steps", type=int, default=20)
+parser.add_argument("--log_every_n_steps", type=int, default=50)
 parser.add_argument("--dry_run", action="store_true", default=False)
 parser.add_argument("--size_threshold", type=int, default=128 * 128 * 128)
 
 # train
-parser.add_argument("--num_workers", type=int, default=8)
+parser.add_argument("--num_workers", type=int, default=4)
 parser.add_argument("--gpu_ids", type=int, nargs="+", default=[0, 1])
-parser.add_argument("--multi_gpu", action="store_true", default=False)
 parser.add_argument("--resume", action="store_true", default=False)
 parser.add_argument("--allow_partial_weight", action="store_true", default=False)
 
@@ -51,9 +50,8 @@ parser.add_argument("--lr_scheduler", type=str, default="multisteplr")
 parser.add_argument("--step_size", type=list, default=[120, 180])
 parser.add_argument("--gamma", type=float, default=0.1)
 parser.add_argument("--num_epochs", type=int, default=10_000)
-parser.add_argument("--img_size", type=int, default=128)
 parser.add_argument("--batch_size", type=int, default=1)
-parser.add_argument("--accumulation_steps", type=int, default=20)
+parser.add_argument("--accumulation_steps", type=int, default=1)
 parser.add_argument("--lr", type=float, default=8e-4)
 parser.add_argument("--weight_decay", type=float, default=0.0)
 parser.add_argument("--port", type=int, default=12361)
@@ -279,7 +277,7 @@ class BaseTrainer:
 
     def set_loss_fn(self):
         self.seg_loss = DiceCELoss(
-            sigmoid=True, squared_pred=True, reduction="mean", smooth_dr=1e-5, smooth_nr=1e-5, lambda_ce=20.0
+            sigmoid=True, squared_pred=True, reduction="mean", smooth_dr=1e-5, smooth_nr=1e-5, lambda_ce=1.0
         )
         self.rec_loss = SigmoidMSELoss()
 

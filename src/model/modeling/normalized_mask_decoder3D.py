@@ -111,6 +111,7 @@ class NormalizedTwoWayTransformer3D(nn.Module):
         point_pe_factor: Optional[Tensor],
     ) -> Tuple[Tensor, Tensor]:
         image_embedding = image_embedding.flatten(2).permute(0, 2, 1)
+        image_pe_term = image_pe_term.flatten(2).permute(0, 2, 1) if image_pe_term is not None else None
 
         # Apply transformer blocks and final layernorm
         for layer in self.layers:
@@ -185,7 +186,7 @@ class TwoWayAttentionBlock3D(nn.Module):
         keys_pe = keys
         if add_pe_terms:
             queries_pe = queries + query_pe_term.reshape(queries.shape)
-            keys_pe = keys + key_pe_term.reshape(keys.shape)
+            keys_pe = keys + key_pe_term
 
         queries = self.cross_attn_token_to_image(
             q=queries_pe, k=keys_pe, v=keys, residual_stream=queries, query_pe=query_pe_factor, key_pe=key_pe_factor
