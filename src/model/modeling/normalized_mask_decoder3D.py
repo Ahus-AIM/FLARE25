@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from typing import List, Tuple, Type
+from typing import List, Optional, Tuple, Type
 
 import torch
 import torch.nn as nn
@@ -104,34 +104,19 @@ class NormalizedTwoWayTransformer3D(nn.Module):
     def forward(
         self,
         image_embedding: Tensor,
-        image_pe: Tensor,
+        image_pe_term: Optional[Tensor],
         point_embedding: Tensor,
+        point_pe_term: Optional[Tensor],
     ) -> Tuple[Tensor, Tensor]:
-        """
-        Args:
-          image_embedding (torch.Tensor): image to attend to. Should be shape
-            B x embedding_dim x h x w for any h and w.
-          image_pe (torch.Tensor): the positional encoding to add to the image. Must
-            have the same shape as image_embedding.
-          point_embedding (torch.Tensor): the embedding to add to the query points.
-            Must have shape B x N_points x embedding_dim for any N_points.
-
-        Returns:
-          torch.Tensor: the processed image_embedding
-        """
-        bs, c, x, y, z = image_embedding.shape
         image_embedding = image_embedding.flatten(2).permute(0, 2, 1)
-        image_pe = image_pe.flatten(2).permute(0, 2, 1)
-
-        query_pe = point_embedding.clone()
 
         # Apply transformer blocks and final layernorm
         for layer in self.layers:
             point_embedding, image_embedding = layer(
                 queries=point_embedding,
                 keys=image_embedding,
-                query_pe=query_pe,
-                key_pe=image_pe,
+                query_pe_term=point_pe_term,
+                key_pe_term=image_pe_term,
             )
 
         return image_embedding
@@ -165,11 +150,41 @@ class TwoWayAttentionBlock3D(nn.Module):
         self.mlp = MLPBlock3D(embedding_dim, mlp_dim, activation)
         self.cross_attn_image_to_token = Attention(embedding_dim, num_heads, downsample_rate=attention_downsample_rate)
 
-    def forward(self, queries: Tensor, keys: Tensor, query_pe: Tensor, key_pe: Tensor) -> Tuple[Tensor, Tensor]:
-        queries = self.self_attn(q=queries + query_pe, k=queries + query_pe, v=queries, residual_stream=queries)
-        queries = self.cross_attn_token_to_image(q=queries + query_pe, k=keys + key_pe, v=keys, residual_stream=queries)
+    def forward(
+        self,
+        queries: Tensor,
+        keys: Tensor,
+        query_pe_term: Optional[Tensor],
+        key_pe_term: Optional[Tensor],
+    ) -> Tuple[Tensor, Tensor]:
+        add_pe_terms = query_pe_term is not None
+
+        queries_pe = queries
+        if add_pe_terms:
+            queries_pe = queries + query_pe_term
+
+        queries = self.self_attn(
+            q=queries_pe,
+            k=queries_pe,
+            v=queries,
+            residual_stream=queries,
+        )
+
+        queries_pe = queries
+        keys_pe = keys
+        if add_pe_terms:
+            queries_pe = queries + query_pe_term.reshape(queries.shape)
+            keys_pe = keys + key_pe_term.reshape(keys.shape)
+
+        queries = self.cross_attn_token_to_image(q=queries_pe, k=keys_pe, v=keys, residual_stream=queries)
+
         queries = self.mlp(queries, residual_stream=queries)
-        keys = self.cross_attn_image_to_token(q=keys + key_pe, k=queries + query_pe, v=queries, residual_stream=keys)
+
+        queries_pe = queries
+        if add_pe_terms:
+            queries_pe = queries + query_pe_term.reshape(queries.shape)
+
+        keys = self.cross_attn_image_to_token(q=keys_pe, k=queries_pe, v=queries, residual_stream=keys)
 
         return queries, keys
 
@@ -339,17 +354,22 @@ class NormalizedMaskDecoder3D(nn.Module):
     def forward(
         self,
         step_wise_image_embeddings: List[torch.Tensor],
-        image_pe: torch.Tensor,
-        sparse_prompt_embeddings: torch.Tensor,
+        image_pe_term: Optional[torch.Tensor],
+        sparse_prompt_embeddings: Optional[torch.Tensor],
+        sparse_prompt_embeddings_pe_term: Optional[torch.Tensor],
         dense_prompt_embeddings: torch.Tensor,
         **kwargs,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         image_embeddings = step_wise_image_embeddings[0]
         b, c, x, y, z = image_embeddings.shape
         image_embeddings = image_embeddings + dense_prompt_embeddings
-        image_pe = torch.repeat_interleave(image_pe, sparse_prompt_embeddings.shape[0], dim=0)
 
-        image_embeddings = self.transformer(image_embeddings, image_pe, sparse_prompt_embeddings)
+        image_embeddings = self.transformer(
+            image_embeddings,
+            image_pe_term,
+            sparse_prompt_embeddings,
+            sparse_prompt_embeddings_pe_term,
+        )
 
         # Upscale mask embeddings and predict masks using the mask tokens
         image_embeddings = image_embeddings.transpose(1, 2).view(b, c, x, y, z) * self.embed_dim**0.5

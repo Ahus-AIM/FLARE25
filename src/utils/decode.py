@@ -16,6 +16,13 @@ def decoder_forward(
     points: Optional[Tuple[Points, PointLabels]] = None,
     boxes: Optional[torch.Tensor] = None,
 ) -> Mask:
-    sparse_emb, dense_emb = model.prompt_encoder(points, boxes, mask_logits)
-    mask_logits = model.mask_decoder(image_embeddings, model.prompt_encoder.get_dense_pe(), sparse_emb, dense_emb)
+    batch_size = image_embeddings[0].shape[0]
+    sparse_emb, sparse_emb_pe_term, dense_emb = model.prompt_encoder(points, boxes, mask_logits)
+    mask_logits = model.mask_decoder(
+        image_embeddings,
+        model.prompt_encoder.get_dense_pe_term(batch_size),
+        sparse_emb,
+        sparse_emb_pe_term,
+        dense_emb,
+    )
     return mask_logits
