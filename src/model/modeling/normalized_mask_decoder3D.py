@@ -325,6 +325,7 @@ class NormalizedMaskDecoder3D(nn.Module):
                 bias=True,
             )
             self.up_layers.append(level)
+        self.up_layers[-1]["head"].bias.data.fill_(-5)
 
     def output_upscaling(self, x, x_down):
         for i, level in enumerate((self.up_layers)):
