@@ -80,26 +80,14 @@ class PromptEncoder3D(nn.Module):
         prev_mask_downscaling_factor: int,
         image_embedding_size: Tuple[int, int, int],
         input_image_size: Tuple[int, int, int],
-        activation: Type[nn.Module],
         init_filters: int,
+        position_encoder: PositionEncoder3D,
     ) -> None:
-        """
-        Encodes prompts for input to SAM's mask decoder.
-
-        Arguments:
-          embed_dim (int): The prompts' embedding dimension
-          image_embedding_size (tuple(int, int)): The spatial size of the
-            image embedding, as (H, W).
-          input_image_size (int): The padded size of the image as input
-            to the image encoder, as (H, W).
-          activation (nn.Module): The activation to use when encoding
-            input masks.
-        """
         super().__init__()
         self.embed_dim = embed_dim
         self.input_image_size = input_image_size
         self.image_embedding_size = image_embedding_size
-        self.pe_layer = PositionEmbeddingRandom3D(embed_dim // 3)
+        self.position_encoder = position_encoder
 
         self.num_point_embeddings: int = 2  # pos/neg point
         self.point_embeddings = MultiClickEmbedding(embed_dim, self.num_point_embeddings)
@@ -118,8 +106,11 @@ class PromptEncoder3D(nn.Module):
 
         self.no_mask_embed = nn.Embedding(1, embed_dim)
 
-    def get_dense_pe(self) -> torch.Tensor:
-        return self.pe_layer(self.image_embedding_size).unsqueeze(0)  # 1xXxYxZ
+    def get_dense_pe_term(self, batch_size: int) -> Optional[torch.Tensor]:
+        return self.position_encoder.compute_dense_pe_term(batch_size, self.image_embedding_size)  # 1xXxYxZ
+
+    def get_dense_pe_factor(self, batch_size: int) -> Optional[torch.Tensor]:
+        return self.position_encoder.compute_dense_pe_factor(batch_size, self.image_embedding_size)  # 1xXxYxZ
 
     def _embed_masks(self, masks: torch.Tensor) -> torch.Tensor:
         mask_embedding = self.mask_downscaling(masks)
@@ -172,6 +163,7 @@ class PromptEncoder3D(nn.Module):
         bs = self._get_batch_size(points, boxes, masks)
         sparse_embeddings = torch.empty((bs, 0, self.embed_dim), device=self._get_device())
         sparse_embeddings_pe_term = None
+        sparse_embeddings_pe_factor = None
 
         point_embeddings = None
         coords, labels = None, None
@@ -197,9 +189,17 @@ class PromptEncoder3D(nn.Module):
                     else pe_term
                 )
 
+            pe_factor = self.position_encoder.compute_point_pe_factor(coords)
+            if pe_factor is not None:
+                sparse_embeddings_pe_factor = (
+                    torch.cat([sparse_embeddings_pe_factor, pe_factor], dim=1)
+                    if sparse_embeddings_pe_factor is not None
+                    else pe_factor
+                )
+
         if masks is not None:
             dense_embeddings = self._embed_masks(masks)
         else:
             dense_embeddings = torch.tensor(0.0, device=self._get_device())
 
-        return sparse_embeddings, sparse_embeddings_pe_term, dense_embeddings
+        return sparse_embeddings, sparse_embeddings_pe_term, sparse_embeddings_pe_factor, dense_embeddings
