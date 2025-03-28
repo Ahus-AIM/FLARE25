@@ -18,7 +18,7 @@ from monai.transforms import CropForeground
 from torch.backends import cudnn
 from tqdm import tqdm
 
-from src.dataset.npz_dataset import NPZDataset, create_weighted_sampler
+from src.dataset.npz_dataset import NPZDataset, create_weighted_dataset_folder_sampler, create_weighted_sampler
 from src.model.build_ahus_model import model_registry
 from src.utils.decode import decoder_forward
 from src.utils.interact import interact
@@ -30,6 +30,11 @@ MODEL_SAVE_PATH = "model_save_path"
 click_methods = {
     "challenge": interact,
 }
+sampler_class = {
+    "modality": create_weighted_sampler,
+    "dataset": create_weighted_dataset_folder_sampler,
+}
+
 logger = logging.getLogger(__name__)
 
 
@@ -180,7 +185,8 @@ def get_dataloaders_npz(args):
         size_threshold=args.size_threshold,
         data_suffix="npz",
     )
-    train_sampler = create_weighted_sampler(train_dataset)
+    train_sampler = sampler_class[args.data_sampling_method](train_dataset)
+    train_sampler = sampler_class[args.data_sampling_method](train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -195,7 +201,8 @@ def get_dataloaders_npz(args):
         load_n_first=1000,
         data_suffix="npz",
     )
-    val_sampler = create_weighted_sampler(val_dataset)
+    val_sampler = sampler_class[args.data_sampling_method](val_dataset)
+    val_sampler = sampler_class[args.data_sampling_method](val_dataset)
     val_dataloader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=args.batch_size,
@@ -756,6 +763,7 @@ if __name__ == "__main__":
     parser.add_argument("--dry_run", action="store_true", default=False)
     parser.add_argument("--profile", action="store_true", default=False)
     parser.add_argument("--size_threshold", type=int, default=128 * 128 * 128)
+    parser.add_argument("--data_sampling_method", type=str, default="dataset")
 
     # train
     parser.add_argument("--num_workers", type=int, default=4)
