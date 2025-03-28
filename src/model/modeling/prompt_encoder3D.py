@@ -32,6 +32,7 @@ class MultiClickEmbedding(nn.Module):
         self.num_points = num_points
 
         self.point_embeddings = nn.ModuleList([nn.Embedding(1, embed_dim) for i in range(self.num_points)])
+        self.last_click_embedding = nn.Embedding(1, embed_dim)
 
     def get_device(self) -> torch.device:
         return self.point_embeddings[0].weight.device
@@ -41,6 +42,8 @@ class MultiClickEmbedding(nn.Module):
         point_embedding = torch.zeros((points.shape[0], points.shape[1], self.embed_dim), device=points.device)
         for i in range(self.num_points):
             point_embedding[labels == i] += self.point_embeddings[i].weight
+        if labels.shape[1] > 0:
+            point_embedding[:, -1] += self.last_click_embedding.weight
         return point_embedding
 
 
