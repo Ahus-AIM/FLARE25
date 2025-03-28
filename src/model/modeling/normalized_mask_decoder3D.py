@@ -111,16 +111,17 @@ class NormalizedTwoWayTransformer3D(nn.Module):
         point_pe_factor: Optional[Tensor],
     ) -> Tuple[Tensor, Tensor]:
         image_embedding = image_embedding.flatten(2).permute(0, 2, 1)
+        image_pe_term = image_pe_term.flatten(2).permute(0, 2, 1) if image_pe_term is not None else None
 
         # Apply transformer blocks and final layernorm
         for layer in self.layers:
             point_embedding, image_embedding = layer(
-                queries=point_embedding,
-                keys=image_embedding,
-                query_pe_term=point_pe_term,
-                query_pe_factor=point_pe_factor,
-                key_pe_term=image_pe_term,
-                key_pe_factor=image_pe_factor,
+                point_embedding=point_embedding,
+                image_embedding=image_embedding,
+                point_pe_term=point_pe_term,
+                point_pe_factor=point_pe_factor,
+                image_pe_term=image_pe_term,
+                image_pe_factor=image_pe_factor,
             )
 
         return image_embedding
@@ -156,52 +157,62 @@ class TwoWayAttentionBlock3D(nn.Module):
 
     def forward(
         self,
-        queries: Tensor,
-        keys: Tensor,
-        query_pe_term: Optional[Tensor],
-        query_pe_factor: Optional[Tensor],
-        key_pe_term: Optional[Tensor],
-        key_pe_factor: Optional[Tensor],
+        point_embedding: Tensor,
+        image_embedding: Tensor,
+        point_pe_term: Optional[Tensor],
+        point_pe_factor: Optional[Tensor],
+        image_pe_term: Optional[Tensor],
+        image_pe_factor: Optional[Tensor],
     ) -> Tuple[Tensor, Tensor]:
-        if (query_pe_term is None) != (key_pe_term is None):
-            raise ValueError("PE terms must be provided for both queries and keys or neither.")
+        if (point_pe_term is None) != (image_pe_term is None):
+            raise ValueError("PE terms must be provided for both point and image or neither.")
 
-        add_pe_terms = query_pe_term is not None
+        add_pe_terms = point_pe_term is not None
 
-        queries_pe = queries
+        point_pe = point_embedding
         if add_pe_terms:
-            queries_pe = queries + query_pe_term
+            point_pe = point_embedding + point_pe_term
 
-        queries = self.self_attn(
-            q=queries_pe,
-            k=queries_pe,
-            v=queries,
-            residual_stream=queries,
-            query_pe=query_pe_factor,
-            key_pe=query_pe_factor,
+        point_embedding = self.self_attn(
+            q=point_pe,
+            k=point_pe,
+            v=point_embedding,
+            residual_stream=point_embedding,
+            query_pe=point_pe_factor,
+            key_pe=point_pe_factor,
         )
 
-        queries_pe = queries
-        keys_pe = keys
+        point_pe = point_embedding
+        image_pe = image_embedding
         if add_pe_terms:
-            queries_pe = queries + query_pe_term.reshape(queries.shape)
-            keys_pe = keys + key_pe_term.reshape(keys.shape)
+            point_pe = point_embedding + point_pe_term.reshape(point_embedding.shape)
+            image_pe = image_embedding + image_pe_term
 
-        queries = self.cross_attn_token_to_image(
-            q=queries_pe, k=keys_pe, v=keys, residual_stream=queries, query_pe=query_pe_factor, key_pe=key_pe_factor
+        point_embedding = self.cross_attn_token_to_image(
+            q=point_pe,
+            k=image_pe,
+            v=image_embedding,
+            residual_stream=point_embedding,
+            query_pe=point_pe_factor,
+            key_pe=image_pe_factor,
         )
 
-        queries = self.mlp(queries, residual_stream=queries)
+        point_embedding = self.mlp(point_embedding, residual_stream=point_embedding)
 
-        queries_pe = queries
+        point_pe = point_embedding
         if add_pe_terms:
-            queries_pe = queries + query_pe_term.reshape(queries.shape)
+            point_pe = point_embedding + point_pe_term.reshape(point_embedding.shape)
 
-        keys = self.cross_attn_image_to_token(
-            q=keys_pe, k=queries_pe, v=queries, residual_stream=keys, query_pe=key_pe_factor, key_pe=query_pe_factor
+        image_embedding = self.cross_attn_image_to_token(
+            q=image_pe,
+            k=point_pe,
+            v=point_embedding,
+            residual_stream=image_embedding,
+            query_pe=image_pe_factor,
+            key_pe=point_pe_factor,
         )
 
-        return queries, keys
+        return point_embedding, image_embedding
 
 
 class Attention(nn.Module):

@@ -14,35 +14,34 @@ import nibabel as nib
 import torch
 import torch.multiprocessing as mp
 from monai.losses import DiceCELoss
+from monai.transforms import CropForeground
 from torch.backends import cudnn
 from tqdm import tqdm
 
-from src.dataset.npz_dataset import NPZDataset
+from src.dataset.npz_dataset import NPZDataset, create_weighted_sampler
 from src.model.build_ahus_model import model_registry
-from src.transform.transform import Compose, CropOrPad, Flip
 from src.utils.decode import decoder_forward
 from src.utils.interact import interact
 
 # set up parser
 parser = argparse.ArgumentParser()
 parser.add_argument("--task_name", type=str, default="union_train")
-parser.add_argument("--click_type", type=str, default="random")
-parser.add_argument("--model_type", type=str, default="vit_b_ori")
+parser.add_argument("--click_type", type=str, default="challenge")
+parser.add_argument("--model_type", type=str, default="ahus_model_sinusoidal")
 parser.add_argument("--checkpoint", type=str, default="ckpt/sam_med3d.pth")
 parser.add_argument("--device", type=str, default="cuda")
 parser.add_argument("--work_dir", type=str, default="work_dir")
-parser.add_argument("--num_clicks", type=int, default=5)
+parser.add_argument("--num_clicks", type=int, default=2)
 parser.add_argument("--last_click_loss_weight", type=int, default=1)
-parser.add_argument("--base_dir", type=str, default="/data/drive_data/3D_train_npz_random_10percent_16G")
+parser.add_argument("--base_dir", type=str, default="/data/drive_data/3D_train_npz_random_10percent_16G_original")
 parser.add_argument("--val_dir", type=str, default="/data/3D_val_npz")
-parser.add_argument("--log_every_n_steps", type=int, default=20)
+parser.add_argument("--log_every_n_steps", type=int, default=50)
 parser.add_argument("--dry_run", action="store_true", default=False)
-parser.add_argument("--load_encoder_vit_path", type=str, default="")
+parser.add_argument("--size_threshold", type=int, default=128 * 128 * 128)
 
 # train
-parser.add_argument("--num_workers", type=int, default=24)
+parser.add_argument("--num_workers", type=int, default=4)
 parser.add_argument("--gpu_ids", type=int, nargs="+", default=[0, 1])
-parser.add_argument("--multi_gpu", action="store_true", default=False)
 parser.add_argument("--resume", action="store_true", default=False)
 parser.add_argument("--allow_partial_weight", action="store_true", default=False)
 
@@ -51,9 +50,8 @@ parser.add_argument("--lr_scheduler", type=str, default="multisteplr")
 parser.add_argument("--step_size", type=list, default=[120, 180])
 parser.add_argument("--gamma", type=float, default=0.1)
 parser.add_argument("--num_epochs", type=int, default=10_000)
-parser.add_argument("--img_size", type=int, default=128)
-parser.add_argument("--batch_size", type=int, default=12)
-parser.add_argument("--accumulation_steps", type=int, default=20)
+parser.add_argument("--batch_size", type=int, default=1)
+parser.add_argument("--accumulation_steps", type=int, default=1)
 parser.add_argument("--lr", type=float, default=8e-4)
 parser.add_argument("--weight_decay", type=float, default=0.0)
 parser.add_argument("--port", type=int, default=12361)
@@ -213,34 +211,46 @@ def build_model(args):
 
 
 def get_dataloaders_npz(args):
+    transform = CropForeground(select_fn=lambda x: x > 0, k_divisible=8, allow_smaller=True)
+
     train_dataset = NPZDataset(
         base_dir=args.base_dir,
-        transform=Compose([CropOrPad((args.img_size, args.img_size, args.img_size)), Flip()]),
+        transform=transform,
+        size_threshold=args.size_threshold,
+        data_suffix="npz",
     )
-
+    train_sampler = create_weighted_sampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        shuffle=True,
         num_workers=args.num_workers,
-        pin_memory=True,
-        persistent_workers=True,
+        sampler=train_sampler,
     )
 
     val_dataset = NPZDataset(
         base_dir=args.val_dir,
-        transform=Compose([CropOrPad((args.img_size, args.img_size, args.img_size))]),
-        load_n_first=500,
+        transform=transform,
+        size_threshold=args.size_threshold,
+        load_n_first=1000,
+        data_suffix="npz",
     )
+    val_sampler = create_weighted_sampler(val_dataset)
     val_dataloader = torch.utils.data.DataLoader(
         val_dataset,
-        batch_size=args.batch_size // 2,
-        shuffle=False,
+        batch_size=args.batch_size,
         num_workers=args.num_workers,
-        persistent_workers=True,
+        sampler=val_sampler,
     )
 
     return train_dataloader, val_dataloader
+
+
+class SigmoidMSELoss(torch.nn.Module):
+    def __init__(self):
+        super(SigmoidMSELoss, self).__init__()
+
+    def forward(self, rec, target):
+        return torch.nn.functional.mse_loss(torch.sigmoid(rec), target, reduction="none")
 
 
 class BaseTrainer:
@@ -261,26 +271,26 @@ class BaseTrainer:
         self.set_optimizer()
         self.set_lr_scheduler()
         if args.resume:
-            self.init_checkpoint(join(self.args.work_dir, self.args.task_name, "sam_model_latest.pth"))
+            self.init_checkpoint(join(self.args.work_dir, self.args.task_name, "model_latest.pth"))
         else:
-            self.init_checkpoint(self.args.checkpoint, self.args.load_encoder_vit_path)
+            self.init_checkpoint(self.args.checkpoint)
 
     def set_loss_fn(self):
         self.seg_loss = DiceCELoss(
-            sigmoid=True, squared_pred=True, reduction="mean", smooth_dr=1e-5, smooth_nr=1e-5, lambda_ce=20.0
+            sigmoid=True, squared_pred=True, reduction="mean", smooth_dr=1e-5, smooth_nr=1e-5, lambda_ce=1.0
         )
-        self.rec_loss = torch.nn.BCEWithLogitsLoss(reduction="none")
+        self.rec_loss = SigmoidMSELoss()
 
     def set_optimizer(self):
-        sam_model = self.model
+        model = self.model
 
-        def get_param_groups(module, lr_scale=1.0, weight_decay=None):
+        def get_param_groups(module, lr_scale=1.0):
             """Helper function to group parameters while excluding biases and norms from weight decay."""
             decay, no_decay = [], []
             for name, param in module.named_parameters():
                 if not param.requires_grad:
                     continue
-                if "bias" in name or "norm" in name.lower():
+                if "bias" in name.lower() or "norm" in name.lower():
                     no_decay.append(param)
                 else:
                     decay.append(param)
@@ -289,21 +299,15 @@ class BaseTrainer:
                 {
                     "params": decay,
                     "lr": self.args.lr * lr_scale,
-                    "weight_decay": self.args.weight_decay if weight_decay is None else weight_decay,
+                    "weight_decay": self.args.weight_decay,
                 },
                 {"params": no_decay, "lr": self.args.lr * lr_scale, "weight_decay": 0.0},
             ]
 
         param_groups = []
-        param_groups.extend(get_param_groups(sam_model.segresnet, lr_scale=0.1))
-        param_groups.extend(get_param_groups(sam_model.prompt_encoder, lr_scale=1.0))
-        param_groups.extend(
-            get_param_groups(
-                sam_model.mask_decoder,
-                lr_scale=1.0,
-                weight_decay=0.0 if self.args.model_type.endswith("norm") else self.args.weight_decay,
-            )
-        )
+        param_groups.extend(get_param_groups(model.segresnet, lr_scale=1.0))
+        param_groups.extend(get_param_groups(model.prompt_encoder, lr_scale=1.0))
+        param_groups.extend(get_param_groups(model.mask_decoder, lr_scale=1.0))
 
         self.optimizer = torch.optim.AdamW(
             param_groups, lr=self.args.lr, betas=(0.9, 0.999), weight_decay=self.args.weight_decay
@@ -312,7 +316,7 @@ class BaseTrainer:
         print("Registering weight normalization post hook")
 
         def normalize_hook(optimizer, *args, **kwargs):
-            for module in sam_model.modules():
+            for module in model.modules():
                 if hasattr(module, "normalize_weights"):
                     module.normalize_weights()
 
@@ -330,7 +334,7 @@ class BaseTrainer:
         else:
             self.lr_scheduler = torch.optim.lr_scheduler.LinearLR(self.optimizer, 0.1)
 
-    def init_checkpoint(self, ckp_path, load_encoder_vit_path=None):
+    def init_checkpoint(self, ckp_path):
         last_ckpt = None
         if os.path.exists(ckp_path):
             last_ckpt = torch.load(ckp_path, map_location=self.args.device, weights_only=False)
@@ -355,21 +359,6 @@ class BaseTrainer:
             self.start_epoch = 0
             print(f"No checkpoint found at {ckp_path}, start training from scratch")
 
-        if load_encoder_vit_path:
-            print(f"Loading encoder from {load_encoder_vit_path}")
-            vit_mae_ckpt = torch.load(load_encoder_vit_path, map_location=self.args.device, weights_only=False)
-            vit_mae_state_dict = vit_mae_ckpt["model_state_dict"]
-            encoder_state_dict = {k: v for k, v in vit_mae_state_dict.items() if k.startswith("encoder.")}
-            encoder_state_dict = {k.replace("encoder.", ""): v for k, v in encoder_state_dict.items()}
-            encoder_state_dict = {k: v for k, v in encoder_state_dict.items() if "neck" not in k}
-            self.model.image_encoder.load_state_dict(encoder_state_dict, strict=False)
-            # set requires_grad to False for loaded weights (only the keys that are in the loaded weights)
-            for name, param in self.model.image_encoder.named_parameters():
-                if name in encoder_state_dict:
-                    param.requires_grad = False
-
-            print(f"Successfully loaded encoder from {load_encoder_vit_path}")
-
     def save_checkpoint(self, epoch, state_dict, describe="last"):
         torch.save(
             {
@@ -383,7 +372,7 @@ class BaseTrainer:
                 "best_dice": self.best_dice,
                 "args": self.args,
             },
-            join(MODEL_SAVE_PATH, f"sam_model_{describe}.pth"),
+            join(MODEL_SAVE_PATH, f"model_{describe}.pth"),
         )
 
     def get_points(self, mask_logits, mask_targets, threshold=0.5):
@@ -471,7 +460,7 @@ class BaseTrainer:
         xhat,
         rel_file_path=None,
         split_filename_to_dirs=False,
-        zero_pos_weight=1e-3,
+        zero_pos_weight=1e-1,
     ):
         losses_dict = {}
 
@@ -481,7 +470,7 @@ class BaseTrainer:
         reweighing = pos_weight.numel() / pos_weight.sum()
         pos_weight_reweighing = pos_weight * reweighing
 
-        rec_loss = (self.rec_loss(xhat, image) * pos_weight_reweighing).clamp(min=0.0, max=1.0)
+        rec_loss = self.rec_loss(xhat, image) * pos_weight_reweighing
         return_loss = rec_loss.mean()
 
         losses_dict["rec"] = return_loss.item()
@@ -496,14 +485,12 @@ class BaseTrainer:
         losses_dict["box"] = loss.item()
 
         for num_click in range(self.args.num_clicks):
-            points_input, labels_input = self.get_points(mask_logits.detach(), mask_targets, threshold=0.5)
+            points_input, labels_input = self.get_points(mask_logits, mask_targets, threshold=0.5)
             if points_input is None:
                 return_loss += self.seg_loss(mask_logits, mask_targets)
-                return mask_logits, return_loss, {}, class_losses_dict, nii_dict
+                return mask_logits, loss, {}, class_losses_dict, nii_dict
 
-            mask_logits = decoder_forward(
-                model, image_embeddings, mask_logits.detach(), (points_input, labels_input), boxes
-            )
+            mask_logits = decoder_forward(model, image_embeddings, mask_logits, (points_input, labels_input), boxes)
             loss = self.seg_loss(mask_logits, mask_targets)
 
             if num_click == args.num_clicks - 1:
@@ -533,7 +520,7 @@ class BaseTrainer:
     def train_epoch(self, epoch):
         epoch_loss = 0
         self.model.train()
-        sam_model = self.model
+        model = self.model
 
         tbar = tqdm(self.train_dataloader)
         nii_dict = {}
@@ -558,13 +545,13 @@ class BaseTrainer:
             mask_targets = (mask_targets != 0).to(device).type(torch.long)
             boxes = boxes.to(device)
             with torch.amp.autocast("cuda"):
-                image_embeddings, xhat = sam_model.segresnet(image)
+                image_embeddings, xhat = model.segresnet(image)
 
                 self.click_points = []
                 self.click_labels = []
 
                 mask_logits, loss, losses_dict, class_losses_dict, curr_nii_dict = self.interaction(
-                    sam_model, image_embeddings, mask_targets, boxes, image, xhat, rel_file_path
+                    model, image_embeddings, mask_targets, boxes, image, xhat, rel_file_path
                 )
             nii_dict = nii_dict | curr_nii_dict
 
@@ -585,7 +572,7 @@ class BaseTrainer:
             if step % self.args.accumulation_steps == 0 and step != 0:
                 # clip grads at magnitude 1
                 self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(sam_model.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
                 self.optimizer.zero_grad()
@@ -602,7 +589,7 @@ class BaseTrainer:
                     if print_dice > 0.9:
                         self.save_checkpoint(
                             epoch,
-                            sam_model.state_dict(),
+                            model.state_dict(),
                             describe=f"{epoch}_step_dice:{print_dice}_best",
                         )
                 if print_loss < self.step_best_loss:
@@ -627,7 +614,7 @@ class BaseTrainer:
     def val_epoch(self, epoch):
         epoch_loss = 0
         self.model.eval()
-        sam_model = self.model
+        model = self.model
 
         tbar = tqdm(self.val_dataloader)
 
@@ -651,13 +638,13 @@ class BaseTrainer:
                 mask_targets = (mask_targets != 0).to(device).type(torch.long)
                 boxes = boxes.to(device)
                 with torch.amp.autocast("cuda"):
-                    image_embeddings, xhat = sam_model.segresnet(image)
+                    image_embeddings, xhat = model.segresnet(image)
 
                     self.click_points = []
                     self.click_labels = []
 
                     mask_logits, loss, losses_dict, class_losses_dict, curr_nii_dict = self.interaction(
-                        sam_model,
+                        model,
                         image_embeddings,
                         mask_targets,
                         boxes,
@@ -756,13 +743,9 @@ def init_seeds(seed=0, cuda_deterministic=False):
 
 def device_config(args):
     try:
-        if args.device == "mps":
-            args.device = torch.device("mps")
-        else:
-            args.device = torch.device(f"cuda:{args.gpu_ids[0]}")
-
-    except RuntimeError as e:
-        print(e)
+        args.device = torch.device(args.device)
+    except ValueError as e:
+        raise ValueError(f"Invalid device argument: {e}")
 
 
 def main():

@@ -14,18 +14,11 @@ def build_ahus_model(position_encoder_class: PositionEncoder3D) -> AhusModel:
     num_heads = 8
     segresnet = SegResNetDS2(init_filters=init_filters, blocks_down=blocks_down)
 
-    if position_encoder_class == RoPEMixed:
-        position_encoder = RoPEMixed(embed_dim=embed_dim, num_heads=num_heads)
-    elif position_encoder_class == LieRE:
-        position_encoder = LieRE(embed_dim=embed_dim, num_heads=num_heads)
-    else:
-        position_encoder = PositionEmbeddingRandom3D(embed_dim // 2)
+    position_encoder = position_encoder_class(embed_dim=embed_dim, num_heads=num_heads)
 
     prompt_encoder = PromptEncoder3D(
         embed_dim=embed_dim,
         prev_mask_downscaling_factor=8,
-        image_embedding_size=(16, 16, 16),
-        input_image_size=(128, 128, 128),
         init_filters=init_filters,
         position_encoder=position_encoder,
     )
@@ -34,7 +27,6 @@ def build_ahus_model(position_encoder_class: PositionEncoder3D) -> AhusModel:
         depth=2,
         num_heads=num_heads,
         out_chans=1,
-        input_size=16,
         activation=nn.SiLU,
         init_filters=init_filters,
         blocks_up=blocks_up,

@@ -1,7 +1,6 @@
-from typing import List, Tuple
-
 import torch
 from beartype import beartype
+from beartype.typing import List, Tuple
 from jaxtyping import jaxtyped
 
 

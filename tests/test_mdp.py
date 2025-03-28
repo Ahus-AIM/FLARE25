@@ -1,8 +1,7 @@
-from typing import Iterator, List, Tuple
-
 import cupy as cp
 import torch
 from beartype import beartype
+from beartype.typing import Iterator, List, Tuple
 from jaxtyping import jaxtyped
 from torchrl.envs import check_env_specs
 
