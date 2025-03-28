@@ -333,9 +333,9 @@ class NormalizedMaskDecoder3D(nn.Module):
         self.transformer = NormalizedTwoWayTransformer3D(
             depth=depth,
             embedding_dim=embed_dim,
-            mlp_dim=embed_dim * 4,
+            mlp_dim=embed_dim * 2,
             activation=activation,
-            num_heads=8,
+            num_heads=num_heads,
             attention_downsample_rate=1,
         )
         kernel_size, padding, stride = aniso_kernel((2, 2, 2))
