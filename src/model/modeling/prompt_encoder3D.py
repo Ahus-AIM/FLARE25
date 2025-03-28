@@ -26,36 +26,32 @@ class DownscaleBlock3D(nn.Module):
 
 
 class MultiClickEmbedding(nn.Module):
-    def __init__(self, embed_dim, num_points, pad=False):
+    def __init__(self, embed_dim, num_points):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_points = num_points
-        self.pad = pad
 
         self.point_embeddings = nn.ModuleList([nn.Embedding(1, embed_dim) for i in range(self.num_points)])
+        self.last_click_embedding = nn.Embedding(1, embed_dim)
 
     def get_device(self) -> torch.device:
         return self.point_embeddings[0].weight.device
 
-    def forward(self, points: torch.Tensor, labels: torch.Tensor, pad: bool) -> torch.Tensor:
+    def forward(self, points: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         points = points + 0.5  # Shift to center of pixel
-        if pad:
-            padding_point = torch.zeros((points.shape[0], 1, 3), device=points.device)
-            padding_label = -torch.ones((labels.shape[0], 1), device=labels.device)
-            points = torch.cat([points, padding_point], dim=1)
-            labels = torch.cat([labels, padding_label], dim=1)
         point_embedding = torch.zeros((points.shape[0], points.shape[1], self.embed_dim), device=points.device)
         for i in range(self.num_points):
             point_embedding[labels == i] += self.point_embeddings[i].weight
+        if labels.shape[1] > 0:
+            point_embedding[:, -1] += self.last_click_embedding.weight
         return point_embedding
 
 
 class BoxEmbedding(nn.Module):
-    def __init__(self, embed_dim, num_points, pad=False):
+    def __init__(self, embed_dim, num_points):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_points = num_points
-        self.pad = pad
 
         self.box_embedding = nn.ModuleList([nn.Embedding(1, embed_dim) for i in range(self.num_points)])
 
@@ -168,7 +164,7 @@ class PromptEncoder3D(nn.Module):
         coords, labels = None, None
         if points is not None:
             coords, labels = points
-            point_embeddings = self.point_embeddings(coords, labels, pad=(boxes is None))
+            point_embeddings = self.point_embeddings(coords, labels)
 
         box_embeddings = self.corner_embeddings(boxes) if boxes is not None else None
 
