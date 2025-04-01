@@ -93,16 +93,24 @@ def get_reward_fn() -> RewardFn:
 
 
 class MockDatasetIter(Iterator[MedicalData]):
-    def __init__(self, batch_size: int):
-        self.batch_size = batch_size
+    def __init__(self):
+        self.depth_options = [16, 32, 64, 128]
+        self.height_options = [32, 64, 128, 256]
+        self.width_options = [64, 128, 256, 512]
+        self.n_options = len(self.depth_options)
+        self.size_idx = 0  # What the size of the next image will be
 
     def __iter(self):
         return self
 
     def __next__(self):
-        image: Image = torch.rand(self.batch_size, 1, 128, 128, 128)
-        boxes: BBox = torch.rand(self.batch_size, 2, 3)
-        label: Segmentation = torch.randint(0, 2, (self.batch_size, 1, 128, 128, 128), dtype=torch.int64)
+        depth: int = self.depth_options[self.size_idx]
+        height: int = self.height_options[self.size_idx]
+        width: int = self.width_options[self.size_idx]
+        self.size_idx = (self.size_idx + 1) % self.n_options
+        image: Image = torch.rand(1, 1, depth, height, width)
+        boxes: BBox = torch.rand(1, 2, 3)
+        label: Segmentation = torch.randint(0, 2, (1, 1, depth, height, width), dtype=torch.int64)
         medical_data: MedicalData = {
             "image": image,
             "boxes": boxes,
@@ -127,7 +135,6 @@ def test_mdp_no_errors():
     ahus_model.requires_grad_(False)
     ahus_model.eval()
 
-    batch_size = 1
     # TODO: env does not work with n_steps != 5
     env = InteractiveSegmentationEnv(
         n_steps=5,
@@ -137,12 +144,34 @@ def test_mdp_no_errors():
         interaction_fn=get_interaction_fn(),
         reward_fn=get_reward_fn(),
         # only use training data
-        dataset_iter=MockDatasetIter(batch_size=batch_size),
+        dataset_iter=MockDatasetIter(),
         device=device,
-        batch_size=torch.Size((batch_size,)),
-        image_shape=(128, 128, 128),  # TODO: allow for any image shape
     )
     check_env_specs(env)
+
+    # For the first episode, images should have shape (1, 32, 64, 128)
+    td = env.reset()
+    assert td["image"].shape == (1, 1, 32, 64, 128)
+    assert td["mask"].shape == (1, 1, 32, 64, 128)
+    assert td["true_segmentation"].shape == (1, 1, 32, 64, 128)
+    # step should work
+    td = env.rand_step(td)
+
+    # For the second episode, images should have shape (1, 64, 128, 256)
+    td = env.reset()
+    assert td["image"].shape == (1, 1, 64, 128, 256)
+    assert td["mask"].shape == (1, 1, 64, 128, 256)
+    assert td["true_segmentation"].shape == (1, 1, 64, 128, 256)
+    # step should work
+    td = env.rand_step(td)
+
+    # For the third episode, images should have shape (1, 128, 256, 512)
+    td = env.reset()
+    assert td["image"].shape == (1, 1, 128, 256, 512)
+    assert td["mask"].shape == (1, 1, 128, 256, 512)
+    assert td["true_segmentation"].shape == (1, 1, 128, 256, 512)
+    # step should work
+    td = env.rand_step(td)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,7 @@
-from typing import Tuple
-
 import numpy as np
 import torch
 from beartype import beartype
+from beartype.typing import Tuple
 from jaxtyping import jaxtyped
 from scipy.integrate import cumulative_trapezoid
 

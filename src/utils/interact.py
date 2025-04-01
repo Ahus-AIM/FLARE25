@@ -57,7 +57,7 @@ def interact(prediction: torch.Tensor, gt_semantic_seg: torch.Tensor) -> Tuple[L
 
 
 def compute_largest_error_point(error_mask: torch.Tensor) -> Tuple[int, int, int]:
-    if torch.cuda.is_available():
+    if error_mask.device.type == "cuda":
         import cupy as cp
 
         error_mask_cp = cp.from_dlpack(torch.utils.dlpack.to_dlpack(error_mask))
