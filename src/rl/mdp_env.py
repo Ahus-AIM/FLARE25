@@ -107,8 +107,8 @@ class InteractiveSegmentationEnv(EnvBase):
             # points and point_labels are actually bounded, but we don't know the image size beforehand
             points=Unbounded(
                 shape=self.batch_size + (self.n_steps,) + point_shape,
-                dtype=torch.int64,
-                domain="discrete",
+                dtype=torch.float32,
+                domain="continuous",
             ),
             point_labels=Unbounded(
                 shape=self.batch_size + (self.n_steps,) + point_label_shape,
@@ -182,7 +182,7 @@ class InteractiveSegmentationEnv(EnvBase):
                 ),
                 "points": torch.zeros(
                     tensordict.batch_size + (self.n_steps,) + point_shape,
-                    dtype=torch.int64,
+                    dtype=torch.float32,
                     device=tensordict.device,
                 ),
                 "point_labels": torch.zeros(
