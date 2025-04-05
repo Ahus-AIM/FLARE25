@@ -26,8 +26,8 @@ Segmentation = Integer[Tensor, "batch image_channel image_depth image_height ima
 ImageEmbedding = Float[Tensor, "batch _embedding_channel _embedding_depth _embedding_height _embedding_width"]
 
 BBox = Float[Tensor, f"batch {size_to_str(bbox_shape)}"]
-Point = Integer[Tensor, f"batch {size_to_str(point_shape)}"]
-Points = Integer[Tensor, f"batch n_points {size_to_str(point_shape)}"]
+Point = Float[Tensor, f"batch {size_to_str(point_shape)}"]
+Points = Float[Tensor, f"batch n_points {size_to_str(point_shape)}"]
 PointLabel = Integer[Tensor, f"batch {size_to_str(point_label_shape)}"]
 PointLabels = Integer[Tensor, f"batch n_points {size_to_str(point_label_shape)}"]
 Threshold = Float[Tensor, f"batch {size_to_str(threshold_shape)}"]

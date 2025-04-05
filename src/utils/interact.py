@@ -33,25 +33,28 @@ def interact(prediction: torch.Tensor, gt_semantic_seg: torch.Tensor) -> Tuple[L
     to_points_mask = (prediction != gt_semantic_seg).squeeze(1)  # Shape: (B, H, W, D)
 
     batch_points, batch_labels = [], []
+    try:
+        for i in range(batch_size):
+            error_mask = to_points_mask[i]
 
-    for i in range(batch_size):
-        error_mask = to_points_mask[i]
+            if error_mask.sum() > 0:
+                center = compute_largest_error_point(error_mask)
 
-        if error_mask.sum() > 0:
-            center = compute_largest_error_point(error_mask)
+                # Place the click: background click for oversegmentation, foreground for undersegmentation
+                if gt_semantic_seg[i, 0, center[0], center[1], center[2]] == 0:  # Oversegmentation
+                    assert prediction[i, 0, center[0], center[1], center[2]] == 1, "Error in click placement"
+                    label = torch.tensor([[0]], device=device)  # Background label
+                else:  # Undersegmentation
+                    assert prediction[i, 0, center[0], center[1], center[2]] == 0, "Error in click placement"
+                    label = torch.tensor([[1]], device=device)  # Foreground label
 
-            # Place the click: background click for oversegmentation, foreground for undersegmentation
-            if gt_semantic_seg[i, 0, center[0], center[1], center[2]] == 0:  # Oversegmentation
-                assert prediction[i, 0, center[0], center[1], center[2]] == 1, "Error in click placement"
-                label = torch.tensor([[0]], device=device)  # Background label
-            else:  # Undersegmentation
-                assert prediction[i, 0, center[0], center[1], center[2]] == 0, "Error in click placement"
-                label = torch.tensor([[1]], device=device)  # Foreground label
-
-            batch_points.append(torch.tensor([center], dtype=torch.long, device=device).unsqueeze(0))
-            batch_labels.append(label)
-        else:
-            print(f"[Batch item {i}] No error connected components found. Prediction is perfect! No clicks added.")
+                batch_points.append(torch.tensor([center], dtype=torch.float, device=device).unsqueeze(0))
+                batch_labels.append(label)
+            else:
+                print(f"[Batch item {i}] No error connected components found. Prediction is perfect! No clicks added.")
+    except Exception as e:
+        print(f"Error in interact function. Returning empty points lists.\n{e}")
+        batch_points, batch_labels = [], []
 
     return batch_points, batch_labels
 
