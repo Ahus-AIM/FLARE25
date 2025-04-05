@@ -6,6 +6,7 @@ import nibabel as nib
 import numpy as np
 import torch
 import torch.nn.functional as F
+from monai.transforms import CropForeground
 
 from src.model.build_ahus_model import model_registry
 from src.utils.decode import decoder_forward
@@ -14,104 +15,111 @@ torch.set_grad_enabled(False)
 
 
 class VolumeTransforms:
-    def __init__(self, img_size: int = 128) -> None:
-        self.img_size: int = img_size
+    def __init__(self, size_threshold: int) -> None:
+        self.size_threshold = size_threshold
+        self.pooling_factors = [1, 1, 1]
+        self.crop_slices = None
+        self.orig_shape = None
+        self.padded_shape = None
 
     @staticmethod
     def _normalize_volume(volume: torch.Tensor) -> torch.Tensor:
-        volume = volume.clone()
+        volume = volume.clone().float()
         volume[volume <= 0] = torch.nan
         positive_volume = volume[~torch.isnan(volume)]
+        if positive_volume.numel() == 0:
+            return torch.zeros_like(volume)
         min_val = positive_volume.min()
         max_val = positive_volume.max()
         volume = (volume - min_val + 1) / (max_val - min_val + 1)
         volume[torch.isnan(volume)] = 0
         return volume
 
+    def _adaptive_max_pool(self, volume: torch.Tensor) -> torch.Tensor:
+        shape = list(volume.shape[2:])  # D, H, W
+        self.pooling_factors = [1, 1, 1]
+        while volume.numel() > self.size_threshold:
+            min_dim = int(np.argmin(shape))
+            kernel_size = [2, 2, 2]
+            kernel_size[min_dim] = 1
+            volume = F.max_pool3d(volume, kernel_size=kernel_size)
+            shape = list(volume.shape[2:])
+            self.pooling_factors = [self.pooling_factors[i] * kernel_size[i] for i in range(3)]
+            print(volume.shape, volume.numel(), self.size_threshold)
+        return volume
+
     def _crop_volume(self, volume: torch.Tensor) -> torch.Tensor:
-        data_3d: torch.Tensor = volume[0, 0]
-        dims = data_3d.shape
-        slices = []
+        cropped = CropForeground(select_fn=lambda x: x > 0, k_divisible=8, allow_smaller=True)(
+            volume.squeeze(0)
+        ).unsqueeze(0)
+        self.crop_slices = []
         for dim in range(3):
-            projection = data_3d.sum(dim=tuple(set(range(3)) - {dim}))
-            nonzero = torch.nonzero(projection)
-            if nonzero.numel() == 0:
-                start, end = 0, dims[dim]
-            else:
-                start, end = int(nonzero[0].item()), int(nonzero[-1].item()) + 1
-            slices.append(slice(start, end))
-        cropped = volume[..., slices[0], slices[1], slices[2]]
-        self.crop_slices = slices
+            start = int((volume.shape[2 + dim] - cropped.shape[2 + dim]) // 2)
+            end = start + cropped.shape[2 + dim]
+            self.crop_slices.append(slice(start, end))
         return cropped
 
-    def _resample_volume(self, volume: torch.Tensor, spacing: torch.Tensor) -> torch.Tensor:
-        dim_z = spacing[2] * volume.shape[2]
-        dim_y = spacing[1] * volume.shape[3]
-        dim_x = spacing[0] * volume.shape[4]
-        max_dim = max(dim_x, dim_y, dim_z)
-        self.orig_shape = volume.shape[-3:]
-        spacing = spacing / max_dim * self.img_size
-        effective_spacing = torch.tensor([spacing[2], spacing[1], spacing[0]])
-        target_spacing = torch.tensor([1, 1, 1])
-        new_shape = torch.round(torch.tensor(volume.shape[2:]) * effective_spacing / target_spacing).int()
-        for i in range(3):
-            new_shape[i] = new_shape[i].clamp(min=volume.shape[2 + i], max=torch.tensor(self.img_size))
-        self.resampled_shape = new_shape.tolist()
-        return F.interpolate(volume, size=self.resampled_shape, mode="trilinear", align_corners=False)
-
-    def _pad_volume(self, volume: torch.Tensor) -> torch.Tensor:
-        pad = [0, 0, 0, 0, 0, 0]
-        for j in range(3):
-            i = 2 - j
-            diff = self.img_size - volume.shape[2 + j]
-            if diff > 0:
-                pad[2 * i + 1] = diff
-        self.before_padding_shape = volume.shape[-3:]
-        self.padding = tuple(pad)
-        return F.pad(volume, self.padding)
-
-    def resample_volume(
-        self, image5D: torch.Tensor, spacing: torch.Tensor
-    ) -> Optional[torch.Tensor]:  # TODO crop volume as in training script.
+    def preprocess_volume(self, image5D: torch.Tensor) -> torch.Tensor:
+        image5D = image5D.clone()
         self.orig_shape = image5D.shape[-3:]
         image5D = self._normalize_volume(image5D)
-        image5D = self._resample_volume(image5D, spacing)
-        image5D = self._pad_volume(image5D)
+
+        # Downsample with tracking
+        image5D = self._adaptive_max_pool(image5D)
+
+        self.padded_shape = image5D.shape[-3:]  # After pooling but before cropping
+
+        # Crop and track slices
+        image5D = self._crop_volume(image5D)
+        print("C", image5D.shape)
+
+        # Normalize again post-crop for safety
+        image5D = image5D / image5D.max()
+        print("D", image5D.shape)
         return image5D
 
-    def transform_coordinates(
-        self, coords: torch.Tensor, original_shape: torch.Tensor, new_shape: torch.Tensor
-    ) -> torch.Tensor:
-        scale = new_shape.to(torch.float32) / original_shape.to(torch.float32)
-        transformed = coords * scale.to(coords.device)
-        return transformed
+    def transform_coordinates(self, coords: torch.Tensor, direction: str = "forward") -> torch.Tensor:
+        coords = coords.clone()
+        if direction == "forward":
+            for i in range(3):
+                coords[..., i] = coords[..., i] / self.pooling_factors[i]
+                if self.crop_slices is not None:
+                    coords[..., i] -= self.crop_slices[i].start
+        return coords
 
     def forward(
         self,
         image5D: torch.Tensor,
-        spacing: np.ndarray,
+        spacing: np.ndarray = None,
         mask_logits: Optional[torch.Tensor] = None,
         points: Optional[List[torch.Tensor]] = None,
         boxes: Optional[torch.Tensor] = None,
     ):
-        image5D = self.resample_volume(image5D, torch.tensor(spacing))
+        image5D = self.preprocess_volume(image5D)
+
         if points is not None:
             point_coords, point_labels = points
-            point_coords = self.transform_coordinates(
-                point_coords, torch.tensor(self.orig_shape), torch.tensor(self.before_padding_shape)
-            )
+            point_coords = self.transform_coordinates(point_coords, direction="forward")
             points = [point_coords, point_labels]
         if boxes is not None:
-            boxes = self.transform_coordinates(
-                boxes, torch.tensor(self.orig_shape), torch.tensor(self.before_padding_shape)
-            )
+            boxes = self.transform_coordinates(boxes, direction="forward")
+
         return image5D, mask_logits, points, boxes
 
-    def backward(self, mask_logits: torch.Tensor):
-        mask_logits = F.pad(mask_logits, tuple(-p for p in self.padding))
-        mask_logits = F.interpolate(mask_logits, size=self.orig_shape, mode="trilinear")
-        # mask_logits = mask_logits[..., self.crop_slices[0], self.crop_slices[1], self.crop_slices[2]]
-        return mask_logits
+    def backward(self, mask_logits: torch.Tensor) -> torch.Tensor:
+        # Uncrop (pad back to pooled size)
+        pad_sizes = []
+        for dim in range(3):
+            cropped_len = mask_logits.shape[2 + dim]
+            full_len = self.padded_shape[dim]
+            pad_before = self.crop_slices[dim].start
+            pad_after = full_len - pad_before - cropped_len
+            pad_sizes.extend([pad_before, pad_after])
+        pad_sizes = pad_sizes[::-1]  # reverse for torch F.pad
+        mask_logits = F.pad(mask_logits, pad_sizes)
+
+        # Upsample back to original size
+        return F.interpolate(mask_logits, size=self.orig_shape, mode="trilinear", align_corners=False)
 
 
 class InferencePipeline:
@@ -119,7 +127,7 @@ class InferencePipeline:
         self.args: argparse.Namespace = args
         self.device: str = args.device
         self.model: torch.nn.Module = self._load_model()
-        self.coord_handler: VolumeTransforms = VolumeTransforms(args.img_size)
+        self.coord_handler: VolumeTransforms = VolumeTransforms(args.size_threshold)
 
     # -------------------- Data Loading Helpers -------------------- #
     def _get_auxiliary_path(self, main_file: str, prefix: str) -> str:
@@ -305,9 +313,10 @@ class InferencePipeline:
 
         image5D: torch.Tensor = self._transform(data["imgs"]).to(self.device)
         image5D, mask_logits, points, boxes = self.coord_handler.forward(image5D, spacing, mask_logits, points, boxes)
-
-        image_embeddings, _ = self.model.segresnet(image5D)
-        mask_logits = self._batched_decoder_inference(image_embeddings, mask_logits, points, boxes, batch_size=16)
+        # autocast
+        with torch.autocast(device_type=self.device.split(":")[0]):
+            image_embeddings, _ = self.model.segresnet(image5D)
+            mask_logits = self._batched_decoder_inference(image_embeddings, mask_logits, points, boxes, batch_size=4)
 
         self._save_mask_logits(mask_logits)
 
@@ -369,15 +378,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Predict the segmentation of the input images.")
     parser.add_argument("--load_path", type=str, help="Path to the input images.")
     parser.add_argument("--save_path", type=str, help="Path to save the predictions.")
-    parser.add_argument("--model_type", type=str, default="ahus_model", help="Model type to use for prediction.")
+    parser.add_argument(
+        "--model_type", type=str, default="ahus_model_rope_mixed", help="Model type to use for prediction."
+    )
     parser.add_argument(
         "--checkpoint",
         type=str,
-        default="/weights/17_mars/sam_model_0_step_dice:0.9522787928581238_best.pth",
+        default="/weights/5_april/rope_mixed/model_0_step_dice:0.9447498917579651_best.pth",
         help="Path to the model weights.",
     )
     parser.add_argument("--device", type=str, default="cuda:0", help="Device to run the inference on.")
-    parser.add_argument("--img_size", type=int, default=128, help="Size of the input image.")
+    parser.add_argument("--size_threshold", type=int, default=256**3, help="Size of the input image.")
 
     args: argparse.Namespace = parser.parse_args()
     pipeline: InferencePipeline = InferencePipeline(args)
