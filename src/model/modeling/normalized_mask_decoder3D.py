@@ -324,7 +324,7 @@ class NormalizedMaskDecoder3D(nn.Module):
         blocks_up: tuple = (4, 2, 2, 1),
         dsdepth: int = 1,
         preprocess: nn.Module | Callable | None = None,
-        upsample_mode: UpsampleMode | str = "deconv",
+        upsample_mode: UpsampleMode | str = "nontrainable",
         resolution: tuple | None = None,
         **kwargs,
     ) -> None:
@@ -374,7 +374,7 @@ class NormalizedMaskDecoder3D(nn.Module):
                 bias=True,
             )
             self.up_layers.append(level)
-        self.up_layers[-1]["head"].bias.data.fill_(-5)
+        self.up_layers[-1]["head"].bias.data.fill_(-1)
 
     def output_upscaling(self, x, x_down):
         for i, level in enumerate((self.up_layers)):

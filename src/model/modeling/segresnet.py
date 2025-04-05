@@ -203,7 +203,7 @@ class SegResNetDS2(nn.Module):
         blocks_up: tuple | None = None,
         dsdepth: int = 1,
         preprocess: nn.Module | Callable | None = None,
-        upsample_mode: UpsampleMode | str = "deconv",
+        upsample_mode: UpsampleMode | str = "nontrainable",
         resolution: tuple | None = None,
     ):
         super().__init__()
