@@ -276,8 +276,7 @@ class InferencePipeline:
         return model
 
     def _load_agent(self) -> PPOThresholdAgent:
-        # TODO: load a real RL agent
-        return PPOThresholdAgent(device=self.device)
+        return PPOThresholdAgent.load(self.args.agent_folder_path, torch.device(self.device))
 
     def _expand_image_embeddings(self, image_embeddings: List[torch.Tensor], batch_dim: int):
         return [im_emb.repeat(batch_dim, 1, 1, 1, 1) for im_emb in image_embeddings]
@@ -403,6 +402,12 @@ if __name__ == "__main__":
         type=str,
         default="/weights/5_april/rope_mixed/model_0_step_dice:0.9447498917579651_best.pth",
         help="Path to the model weights.",
+    )
+    parser.add_argument(
+        "--agent_folder_path",
+        type=str,
+        default="./weights/rl/ppo-threshold/apr11",
+        help="Path to saved agent.",
     )
     parser.add_argument("--device", type=str, default="cuda:0", help="Device to run the inference on.")
     parser.add_argument("--size_threshold", type=int, default=256**3, help="Size of the input image.")

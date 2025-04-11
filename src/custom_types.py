@@ -5,14 +5,14 @@ from beartype.typing import List, Tuple, TypedDict
 from jaxtyping import Float, Integer
 from torch import Tensor
 
-bbox_shape = torch.Size((2, 3))
-point_shape = torch.Size((3,))
-point_label_shape = torch.Size(())
-threshold_shape = torch.Size(())
-step_shape = torch.Size(())
-reward_shape = torch.Size((1,))
-done_shape = torch.Size((1,))
-upsampling_method_shape = torch.Size(())
+BBOX_SHAPE = torch.Size((2, 3))
+POINT_SHAPE = torch.Size((3,))
+POINT_LABEL_SHAPE = torch.Size(())
+THRESHOLD_SHAPE = torch.Size((1,))
+STEP_SHAPE = torch.Size((1,))
+REWARD_SHAPE = torch.Size((1,))
+DONE_SHAPE = torch.Size((1,))
+UPSAMPLING_METHOD_SHAPE = torch.Size(())
 
 
 def size_to_str(s: torch.Size) -> str:
@@ -25,15 +25,15 @@ Segmentation = Integer[Tensor, "batch image_channel image_depth image_height ima
 # Image embeddings can have varied number of channels and spatial dimensions
 ImageEmbedding = Float[Tensor, "batch _embedding_channel _embedding_depth _embedding_height _embedding_width"]
 
-BBox = Float[Tensor, f"batch {size_to_str(bbox_shape)}"]
-Point = Float[Tensor, f"batch {size_to_str(point_shape)}"]
-Points = Float[Tensor, f"batch n_points {size_to_str(point_shape)}"]
-PointLabel = Integer[Tensor, f"batch {size_to_str(point_label_shape)}"]
-PointLabels = Integer[Tensor, f"batch n_points {size_to_str(point_label_shape)}"]
-Threshold = Float[Tensor, f"batch {size_to_str(threshold_shape)}"]
-UpsamplingMethod = Integer[Tensor, f"batch {size_to_str(upsampling_method_shape)}"]
-Step = Integer[Tensor, f"batch {size_to_str(step_shape)}"]
-Reward = Float[Tensor, f"batch {size_to_str(reward_shape)}"]
+BBox = Float[Tensor, f"batch {size_to_str(BBOX_SHAPE)}"]
+Point = Float[Tensor, f"batch {size_to_str(POINT_SHAPE)}"]
+Points = Float[Tensor, f"batch n_points {size_to_str(POINT_SHAPE)}"]
+PointLabel = Integer[Tensor, f"batch {size_to_str(POINT_LABEL_SHAPE)}"]
+PointLabels = Integer[Tensor, f"batch n_points {size_to_str(POINT_LABEL_SHAPE)}"]
+Threshold = Float[Tensor, f"batch {size_to_str(THRESHOLD_SHAPE)}"]
+UpsamplingMethod = Integer[Tensor, f"batch {size_to_str(UPSAMPLING_METHOD_SHAPE)}"]
+Step = Integer[Tensor, f"batch {size_to_str(STEP_SHAPE)}"]
+Reward = Float[Tensor, f"batch {size_to_str(REWARD_SHAPE)}"]
 
 # An image embedder function returns a list of image embeddings, due to the unet nature of the model
 ImageEmbedderFn = Callable[[Image], List[ImageEmbedding]]

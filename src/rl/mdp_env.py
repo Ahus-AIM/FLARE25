@@ -1,26 +1,46 @@
 from typing import Iterator
 
 import torch
-from tensordict import TensorDict, TensorDictBase  # type: ignore
-from torchrl.data import Binary, Bounded, Composite, Unbounded  # type: ignore
+from beartype.typing import List, Tuple
+from tensordict import TensorDict, TensorDictBase
+from torch.utils.data import DataLoader
+from torchrl.data import Binary, Bounded, Composite, Unbounded
 from torchrl.data.tensor_specs import TensorSpec
-from torchrl.envs import EnvBase  # type: ignore
+from torchrl.envs import EnvBase
 
 from src.custom_types import (
+    BBOX_SHAPE,
+    DONE_SHAPE,
+    POINT_LABEL_SHAPE,
+    POINT_SHAPE,
+    REWARD_SHAPE,
+    STEP_SHAPE,
+    THRESHOLD_SHAPE,
+    BBox,
+    Image,
     ImageEmbedderFn,
+    ImageEmbedding,
     InteractionFn,
+    Mask,
     MaskFn,
     MedicalData,
+    Point,
+    PointLabel,
+    PointLabels,
+    Points,
     PostProcessingFn,
+    Reward,
     RewardFn,
-    bbox_shape,
-    done_shape,
-    point_label_shape,
-    point_shape,
-    reward_shape,
-    step_shape,
-    threshold_shape,
+    Segmentation,
+    Step,
+    Threshold,
 )
+from src.dataset.npz_dataset import NPZDataset
+from src.model.modeling import AhusModel
+from src.utils.decode import decoder_forward
+from src.utils.interact import interact
+from src.utils.postprocess import standard_threshold
+from src.utils.reward import compute_multi_class_dsc_nsd_batch
 
 
 class InteractiveSegmentationEnv(EnvBase):
@@ -44,7 +64,7 @@ class InteractiveSegmentationEnv(EnvBase):
             mask_fn: function that generates a new low resolution mask
             post_processing_fn: function that generates a new high resolution segmentation
             reward_fn: function that computes the reward
-            dataset_iter: iterator over the dataset
+            dataset_iter: iterator over the dataset with batch size 1
             device: device to use
         """
         super().__init__(device=device, batch_size=torch.Size((1,)))  # always use batch size of 1
@@ -94,7 +114,7 @@ class InteractiveSegmentationEnv(EnvBase):
             ),
             # bbox is actually bounded, but we don't know the image size beforehand
             bbox=Unbounded(
-                shape=self.batch_size + bbox_shape,
+                shape=self.batch_size + BBOX_SHAPE,
                 dtype=torch.float32,
                 domain="continuous",
             ),
@@ -106,19 +126,19 @@ class InteractiveSegmentationEnv(EnvBase):
             ),
             # points and point_labels are actually bounded, but we don't know the image size beforehand
             points=Unbounded(
-                shape=self.batch_size + (self.n_steps,) + point_shape,
+                shape=self.batch_size + (self.n_steps,) + POINT_SHAPE,
                 dtype=torch.float32,
                 domain="continuous",
             ),
             point_labels=Unbounded(
-                shape=self.batch_size + (self.n_steps,) + point_label_shape,
+                shape=self.batch_size + (self.n_steps,) + POINT_LABEL_SHAPE,
                 dtype=torch.int64,
                 domain="discrete",
             ),
             step=Bounded(
                 low=0,
                 high=self.n_steps - 1,
-                shape=self.batch_size + step_shape,
+                shape=self.batch_size + STEP_SHAPE,
                 dtype=torch.int64,
                 domain="discrete",
             ),
@@ -137,18 +157,18 @@ class InteractiveSegmentationEnv(EnvBase):
             threshold=Bounded(
                 low=0,
                 high=1,
-                shape=self.batch_size + threshold_shape,
+                shape=self.batch_size + THRESHOLD_SHAPE,
                 dtype=torch.float32,
                 domain="continuous",
             ),
             shape=self.batch_size,
         )
         self.reward_spec: TensorSpec = Unbounded(
-            shape=self.batch_size + reward_shape,
+            shape=self.batch_size + REWARD_SHAPE,
             dtype=torch.float32,
             domain="continuous",
         )
-        self.done_spec: TensorSpec = Binary(shape=self.batch_size + done_shape, dtype=torch.bool)
+        self.done_spec: TensorSpec = Binary(shape=self.batch_size + DONE_SHAPE, dtype=torch.bool)
 
     def _reset(self, tensordict, **kwargs) -> TensorDict:
         if tensordict is None:
@@ -181,19 +201,19 @@ class InteractiveSegmentationEnv(EnvBase):
                     device=tensordict.device,
                 ),
                 "points": torch.zeros(
-                    tensordict.batch_size + (self.n_steps,) + point_shape,
+                    tensordict.batch_size + (self.n_steps,) + POINT_SHAPE,
                     dtype=torch.float32,
                     device=tensordict.device,
                 ),
                 "point_labels": torch.zeros(
-                    tensordict.batch_size + (self.n_steps,) + point_label_shape,
+                    tensordict.batch_size + (self.n_steps,) + POINT_LABEL_SHAPE,
                     dtype=torch.int64,
                     device=tensordict.device,
                 ),
-                "step": torch.zeros(tensordict.batch_size + step_shape, dtype=torch.int64, device=tensordict.device),
+                "step": torch.zeros(tensordict.batch_size + STEP_SHAPE, dtype=torch.int64, device=tensordict.device),
                 "true_segmentation": true_segmentation,
                 "done": torch.full(
-                    tensordict.batch_size + done_shape,
+                    tensordict.batch_size + DONE_SHAPE,
                     False,
                     dtype=torch.bool,
                     device=tensordict.device,
@@ -235,7 +255,7 @@ class InteractiveSegmentationEnv(EnvBase):
 
         reward = self.reward_fn(segmentation, tensordict["true_segmentation"], tensordict["step"])
 
-        done = torch.full(tensordict.batch_size + done_shape, False, dtype=torch.bool, device=self.device)
+        done = torch.full(tensordict.batch_size + DONE_SHAPE, False, dtype=torch.bool, device=self.device)
         done[tensordict["step"] + 1 == self.n_steps] = True
 
         return TensorDict(
@@ -257,3 +277,76 @@ class InteractiveSegmentationEnv(EnvBase):
             batch_size=tensordict.batch_size,
             device=tensordict.device,
         )
+
+
+def get_image_embedder_fn(ahus_model: AhusModel) -> ImageEmbedderFn:
+    def image_embedder_fn(image: Image) -> List[ImageEmbedding]:
+        return ahus_model.image_encoder(image)
+
+    return image_embedder_fn
+
+
+def get_mask_fn(ahus_model: AhusModel) -> MaskFn:
+    def mask_fn(
+        image_embeddings: List[ImageEmbedding],
+        bbox: BBox,
+        points: Points,
+        point_labels: PointLabels,
+        mask: Mask,
+    ) -> Mask:
+        # TODO: this looks bad
+        image_embeddings = image_embeddings[::-1]
+        return decoder_forward(ahus_model, image_embeddings, mask, (points, point_labels), bbox)
+
+    return mask_fn
+
+
+def get_post_processing_fn() -> PostProcessingFn:
+    def post_processing_fn(image: Image, mask: Mask, threshold: Threshold) -> Segmentation:
+        return standard_threshold(mask, threshold)
+
+    return post_processing_fn
+
+
+def get_interaction_fn() -> InteractionFn:
+    def interaction_fn(seg: Segmentation, true_seg: Segmentation) -> Tuple[Point, PointLabel]:
+        point_list, point_label_list = interact(seg, true_seg)
+        point: Point = torch.cat(point_list, dim=0)
+        point_label: PointLabel = torch.cat(point_label_list, dim=0)
+        return point, point_label
+
+    return interaction_fn
+
+
+def get_reward_fn() -> RewardFn:
+    # TODO: use step
+    def reward_fn(seg: Segmentation, true_seg: Segmentation, step: Step) -> Reward:
+        dsc_tensor, nsd_tensor = compute_multi_class_dsc_nsd_batch(
+            true_seg,
+            seg,
+            spacing=torch.ones(seg.shape[0], 3, dtype=torch.float32),
+            tolerance=2.0,
+        )
+        return (dsc_tensor + nsd_tensor).unsqueeze(-1)
+
+    return reward_fn
+
+
+def get_env(ahus_model: AhusModel, device: torch.device, dataset: NPZDataset):
+    env = InteractiveSegmentationEnv(
+        n_steps=5,
+        image_embedder_fn=get_image_embedder_fn(ahus_model),
+        mask_fn=get_mask_fn(ahus_model),
+        post_processing_fn=get_post_processing_fn(),
+        interaction_fn=get_interaction_fn(),
+        reward_fn=get_reward_fn(),
+        dataset_iter=iter(
+            DataLoader(
+                dataset,
+                batch_size=1,
+                shuffle=True,
+            )
+        ),
+        device=device,
+    )
+    return env
