@@ -76,6 +76,8 @@ def main():
     except StopIteration:
         print("Evaluation finished.")
 
+    wandb.finish()
+
 
 if __name__ == "__main__":
     main()

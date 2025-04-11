@@ -104,6 +104,7 @@ def main():
     print("Saving model...", end="")
     agent.save(config.agent.save_folder_path)
     print("done.")
+    wandb.finish()
 
 
 if __name__ == "__main__":
