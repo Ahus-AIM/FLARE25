@@ -136,6 +136,16 @@ class NPZDataset(Dataset):
         return corners_tensor
 
 
+class NPZDatasetWithLongLabels(NPZDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        d = super().__getitem__(idx)
+        d["label"] = d["label"].long()
+        return d
+
+
 def create_weighted_sampler(dataset: NPZDataset) -> WeightedRandomSampler:
     """Creates a WeightedRandomSampler so that each modality (first subfolder) is equally likely to be sampled."""
     modality_counts = {}
