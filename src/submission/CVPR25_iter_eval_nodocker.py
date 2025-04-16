@@ -119,6 +119,8 @@ import subprocess
 
 from tqdm import tqdm
 
+from src.submission.ahus_predict import segmenter_registry
+
 join = os.path.join
 import argparse
 import shutil
@@ -129,6 +131,7 @@ import cc3d
 import numpy as np
 import pandas as pd
 import torch
+from jaxtyping import Integer
 from scipy import integrate
 from scipy.ndimage import distance_transform_edt
 
@@ -140,7 +143,7 @@ from src.utils.surface_dice import (
 
 
 # Taken from CVPR24 challenge code with change to np.unique
-def compute_multi_class_dsc(gt, seg):
+def compute_multi_class_dsc(gt: Integer[np.ndarray, "D H W"], seg: Integer[np.ndarray, "D H W"]):
     dsc = []
     for i in np.unique(gt)[1:]:  # skip bg
         gt_i = gt == i
@@ -150,7 +153,9 @@ def compute_multi_class_dsc(gt, seg):
 
 
 # Taken from CVPR24 challenge code with change to np.unique
-def compute_multi_class_nsd(gt, seg, spacing, tolerance=2.0):
+def compute_multi_class_nsd(
+    gt: Integer[np.ndarray, "D H W"], seg: Integer[np.ndarray, "D H W"], spacing, tolerance=2.0
+):
     nsd = []
     for i in np.unique(gt)[1:]:  # skip bg
         gt_i = gt == i
@@ -163,13 +168,12 @@ def compute_multi_class_nsd(gt, seg, spacing, tolerance=2.0):
 parser = argparse.ArgumentParser(
     "Segmentation iterative refinement with clicks eavluation for docker containers", add_help=False
 )
-parser.add_argument("-i", "--test_img_path", default="/data/3D_val_npz", type=str, help="testing data path")
+parser.add_argument("-i", "--test_img_path", required=True, type=str, help="testing data path")
 parser.add_argument("-o", "--save_path", default="./demo_seg", type=str, help="segmentation output path")
-# parser.add_argument("-d", "--docker_folder_path", default="./team_docker", type=str, help="team docker path")
 parser.add_argument(
     "-val_gts",
     "--validation_gts_path",
-    default=None,
+    required=True,
     type=str,
     help="path to validation set (or final test set) GT files",
 )
@@ -180,14 +184,42 @@ parser.add_argument(
     action="store_true",
     help="Verbose output, e.g., print coordinates of generated clicks",
 )
+parser.add_argument("--model_type", type=str, required=True, help="Model type to use for prediction.")
+parser.add_argument(
+    "--model_checkpoint",
+    type=str,
+    required=True,
+    help="Path to the model weights.",
+)
+parser.add_argument(
+    "--segmenter_type",
+    type=str,
+    required=True,
+    help="Segmenter type to use for binarizing.",
+    choices=list(segmenter_registry.keys()),
+)
+parser.add_argument(
+    "--segmenter_checkpoint",
+    type=str,
+    required=False,  # Some segmenters do not require a checkpoint
+    help="Path to saved segmenter.",
+)
+parser.add_argument("--device", type=str, required=True, help="Device to run the inference on.")
+parser.add_argument("--size_threshold", type=int, required=True, help="Size of the input image.")
+
 
 args = parser.parse_args()
 
 test_img_path = args.test_img_path
 save_path = args.save_path
-# docker_path = args.docker_folder_path
 validation_gts_path = args.validation_gts_path
 verbose = args.verbose
+model_type = args.model_type
+model_checkpoint = args.model_checkpoint
+segmenter_type = args.segmenter_type
+segmenter_checkpoint = args.segmenter_checkpoint
+device = args.device
+size_threshold = args.size_threshold
 
 input_temp = "./inputs/"
 output_temp = "./outputs"
@@ -239,6 +271,8 @@ print("Start evaluating submissions...")
 # To obtain the running time for each case, testing cases are inferred one-by-one
 np.random.seed(0)
 np.random.shuffle(test_cases)
+# Each test case is a single 3D image, with no channels
+# The values are integers, with each integer representing a different class (background, different foreground classes)
 for case in tqdm(test_cases):
     print(f"\n##### {case} #####")
     real_running_time = 0
@@ -249,6 +283,7 @@ for case in tqdm(test_cases):
 
     # copy input image to accumulate clicks in its dict
     shutil.copy(join(test_img_path, case), input_temp)
+    # gts.shape = (depth, height, width), integer values
     if validation_gts_path is None:  # for training images
         gts = np.load(join(input_temp, case))["gts"]
     else:  # for validation or test images --> gts are in separate files to avoid label leakage during the course of the challenge
@@ -354,6 +389,9 @@ for case in tqdm(test_cases):
             # update model input with new click
             input_img = np.load(join(input_temp, case))
 
+            # Save data so it can be used by `cmd`
+            # imgs.shape = (D, H, W)
+            # spacing.shape = (3,)
             if validation_gts_path is None:
                 np.savez_compressed(
                     join(input_temp, case),
@@ -372,7 +410,8 @@ for case in tqdm(test_cases):
                     prev_pred=segs,
                 )
 
-        cmd = f"python3 -m src.submission.ahus_predict --load_path {input_temp} --save_path ./outputs"
+        # This command is expected to take (D, H, W) images from one folder and write (D, H, W) segmentations (integer valued) to a different folder
+        cmd = f"python3 -m src.submission.ahus_predict --load_path {input_temp} --save_path {output_temp} --model_type {model_type} --model_checkpoint {model_checkpoint} --segmenter_type {segmenter_type} --segmenter_checkpoint {segmenter_checkpoint} --device {device} --size_threshold {size_threshold}"
 
         start_time = time.time()
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)

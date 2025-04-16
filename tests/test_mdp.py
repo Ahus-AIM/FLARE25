@@ -14,10 +14,10 @@ from src.custom_types import (
     Mask,
     MaskFn,
     MedicalData,
-    Point,
+    PointCoord,
+    PointCoords,
     PointLabel,
     PointLabels,
-    Points,
     PostProcessingFn,
     Reward,
     RewardFn,
@@ -47,7 +47,7 @@ def get_mask_fn(ahus_model: AhusModel) -> MaskFn:
     def mask_fn(
         image_embeddings: List[ImageEmbedding],
         bbox: BBox,
-        points: Points,
+        points: PointCoords,
         point_labels: PointLabels,
         mask: Mask,
     ) -> Mask:
@@ -68,11 +68,12 @@ def get_post_processing_fn() -> PostProcessingFn:
 
 @jaxtyped(typechecker=beartype)
 def get_interaction_fn() -> InteractionFn:
-    def interaction_fn(seg: Segmentation, true_seg: Segmentation) -> Tuple[Point, PointLabel]:
+    def interaction_fn(seg: Segmentation, true_seg: Segmentation) -> Tuple[PointCoord, PointLabel]:
         point_list, point_label_list = interact(seg, true_seg)
-        point: Point = torch.cat(point_list, dim=0)
+        # Assume that we only get a single point
+        point_coord: PointCoord = torch.cat(point_list, dim=0)
         point_label: PointLabel = torch.cat(point_label_list, dim=0)
-        return point, point_label
+        return point_coord, point_label
 
     return interaction_fn
 

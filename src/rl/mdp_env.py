@@ -11,8 +11,8 @@ from torchrl.envs import EnvBase
 from src.custom_types import (
     BBOX_SHAPE,
     DONE_SHAPE,
+    POINT_COORD_SHAPE,
     POINT_LABEL_SHAPE,
-    POINT_SHAPE,
     REWARD_SHAPE,
     STEP_SHAPE,
     THRESHOLD_SHAPE,
@@ -24,10 +24,10 @@ from src.custom_types import (
     Mask,
     MaskFn,
     MedicalData,
-    Point,
+    PointCoord,
+    PointCoords,
     PointLabel,
     PointLabels,
-    Points,
     PostProcessingFn,
     Reward,
     RewardFn,
@@ -124,9 +124,9 @@ class InteractiveSegmentationEnv(EnvBase):
                 dtype=torch.float32,
                 domain="continuous",
             ),
-            # points and point_labels are actually bounded, but we don't know the image size beforehand
-            points=Unbounded(
-                shape=self.batch_size + (self.n_steps,) + POINT_SHAPE,
+            # point_coords and point_labels are actually bounded, but we don't know the image size beforehand
+            point_coords=Unbounded(
+                shape=self.batch_size + (self.n_steps,) + POINT_COORD_SHAPE,
                 dtype=torch.float32,
                 domain="continuous",
             ),
@@ -200,8 +200,8 @@ class InteractiveSegmentationEnv(EnvBase):
                     dtype=torch.float32,
                     device=tensordict.device,
                 ),
-                "points": torch.zeros(
-                    tensordict.batch_size + (self.n_steps,) + POINT_SHAPE,
+                "point_coords": torch.zeros(
+                    tensordict.batch_size + (self.n_steps,) + POINT_COORD_SHAPE,
                     dtype=torch.float32,
                     device=tensordict.device,
                 ),
@@ -238,7 +238,7 @@ class InteractiveSegmentationEnv(EnvBase):
                 tensordict["image_embedding4"],
             ],
             tensordict["bbox"],
-            tensordict["points"][..., :step, :],
+            tensordict["point_coords"][..., :step, :],
             tensordict["point_labels"][..., :step],
             tensordict["mask"],
         )
@@ -246,10 +246,10 @@ class InteractiveSegmentationEnv(EnvBase):
         # Always use upsampling method 0 for now
         segmentation = self.post_processing_fn(tensordict["image"], new_low_res_mask, tensordict["threshold"])
 
-        new_point, new_point_label = self.interaction_fn(segmentation, tensordict["true_segmentation"])
-        # add new point and new label to the points and point_labels tensors
-        new_points = tensordict["points"].clone()
-        new_points[:, [step], :] = new_point
+        new_point_coord, new_point_label = self.interaction_fn(segmentation, tensordict["true_segmentation"])
+        # add new point coord and new label to the point_coords and point_labels tensors
+        new_point_coords = tensordict["point_coords"].clone()
+        new_point_coords[:, [step], :] = new_point_coord
         new_point_labels = tensordict["point_labels"].clone()
         new_point_labels[:, [step]] = new_point_label
 
@@ -267,7 +267,7 @@ class InteractiveSegmentationEnv(EnvBase):
                 "image_embedding4": tensordict["image_embedding4"],
                 "bbox": tensordict["bbox"],
                 "mask": new_low_res_mask,
-                "points": new_points,
+                "point_coords": new_point_coords,
                 "point_labels": new_point_labels,
                 "step": tensordict["step"] + 1,
                 "true_segmentation": tensordict["true_segmentation"],
@@ -290,13 +290,13 @@ def get_mask_fn(ahus_model: AhusModel) -> MaskFn:
     def mask_fn(
         image_embeddings: List[ImageEmbedding],
         bbox: BBox,
-        points: Points,
+        point_coords: PointCoords,
         point_labels: PointLabels,
         mask: Mask,
     ) -> Mask:
         # TODO: this looks bad
         image_embeddings = image_embeddings[::-1]
-        return decoder_forward(ahus_model, image_embeddings, mask, (points, point_labels), bbox)
+        return decoder_forward(ahus_model, image_embeddings, mask, (point_coords, point_labels), bbox)
 
     return mask_fn
 
@@ -309,11 +309,12 @@ def get_post_processing_fn() -> PostProcessingFn:
 
 
 def get_interaction_fn() -> InteractionFn:
-    def interaction_fn(seg: Segmentation, true_seg: Segmentation) -> Tuple[Point, PointLabel]:
-        point_list, point_label_list = interact(seg, true_seg)
-        point: Point = torch.cat(point_list, dim=0)
+    def interaction_fn(seg: Segmentation, true_seg: Segmentation) -> Tuple[PointCoord, PointLabel]:
+        point_coord_list, point_label_list = interact(seg, true_seg)
+        # Assume that we only receive one point coord and label
+        point_coord: PointCoord = torch.cat(point_coord_list, dim=0)
         point_label: PointLabel = torch.cat(point_label_list, dim=0)
-        return point, point_label
+        return point_coord, point_label
 
     return interaction_fn
 

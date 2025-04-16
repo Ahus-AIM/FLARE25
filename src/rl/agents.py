@@ -1,5 +1,3 @@
-import json
-import os
 from typing import Any
 
 import torch
@@ -61,7 +59,7 @@ class PPOThresholdAgent:
         # You can wrap this in autocast when calling from training loop if needed
         return self.policy_module(td)
 
-    def process_batch(self, td: TensorDictBase) -> None:
+    def process_batch(self, td: TensorDictBase):
         """
         Process a batch of data, updating value networks and policy
         """
@@ -87,44 +85,39 @@ class PPOThresholdAgent:
 
     def save(self, path: str) -> None:
         """
-        Save the model weights of policy to a file along with the hyperparameters
+        Save the model weights and hyperparameters to a single file.
 
         Args:
-            path (str): Path to folder for saving the model weights and hyperparameters
+            path (str): Path to the file where the model and hyperparameters will be saved.
         """
-        # Create folder if it doesn't exist
-        os.makedirs(path, exist_ok=True)
-
-        # Save the model's state_dict
-        model_path = os.path.join(path, "model.pth")
-        torch.save(self.policy_module.state_dict(), model_path)
-
-        # Save the hyperparameters in a JSON file
-        config = {
-            "lr": self.lr,
-            "clip_epsilon": self.clip_epsilon,
-            "entropy_bonus": self.entropy_bonus,
-            "max_grad_norm": self.max_grad_norm,
+        # Prepare the data to save
+        checkpoint = {
+            "state_dict": self.policy_module.state_dict(),
+            "hyperparameters": {
+                "lr": self.lr,
+                "clip_epsilon": self.clip_epsilon,
+                "entropy_bonus": self.entropy_bonus,
+                "max_grad_norm": self.max_grad_norm,
+            },
         }
-        config_path = os.path.join(path, "config.json")
-        with open(config_path, "w") as f:
-            json.dump(config, f)
+
+        # Save everything in one file
+        torch.save(checkpoint, path)
 
     @staticmethod
     def load(path: str, device: torch.device) -> "PPOThresholdAgent":
         """
-        Load the policy model weights and hyperparameters from a folder
+        Load the policy model weights and hyperparameters from a single file.
 
         Args:
-            path (str): Path to folder containing the model weights and hyperparameters
+            path (str): Path to the file containing the model and hyperparameters
             device (torch.device): Device to load the model on
         """
-        # Load the hyperparameters from the config file
-        config_path = os.path.join(path, "config.json")
-        with open(config_path, "r") as f:
-            config = json.load(f)
+        # Load the combined checkpoint
+        checkpoint = torch.load(path, map_location=device)
+        config = checkpoint["hyperparameters"]
 
-        # Create the agent using the loaded configuration
+        # Create the agent using the loaded hyperparameters
         agent = PPOThresholdAgent(
             device=device,
             lr=config["lr"],
@@ -133,8 +126,7 @@ class PPOThresholdAgent:
             max_grad_norm=config["max_grad_norm"],
         )
 
-        # Load the model's state_dict
-        model_path = os.path.join(path, "model.pth")
-        agent.policy_module.load_state_dict(torch.load(model_path, map_location=device))
+        # Load the model weights
+        agent.policy_module.load_state_dict(checkpoint["state_dict"])
 
         return agent
