@@ -3,7 +3,7 @@ from beartype import beartype
 from beartype.typing import List, Optional, Tuple
 from jaxtyping import jaxtyped
 
-from src.custom_types import ImageEmbedding, Mask, PointLabels, Points
+from src.custom_types import ImageEmbedding, Mask, PointCoords, PointLabels
 from src.model.modeling import AhusModel
 
 
@@ -12,7 +12,7 @@ def decoder_forward(
     model: AhusModel,
     image_embeddings: List[ImageEmbedding],
     mask_logits: Mask | None = None,
-    points: Optional[Tuple[Points, PointLabels]] = None,
+    points: Optional[Tuple[PointCoords, PointLabels]] = None,
     boxes: Optional[torch.Tensor] = None,
 ) -> Mask:
     batch_size, _, *spatial_dims = image_embeddings[0].shape

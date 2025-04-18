@@ -271,6 +271,7 @@ print("Start evaluating submissions...")
 # To obtain the running time for each case, testing cases are inferred one-by-one
 np.random.seed(0)
 np.random.shuffle(test_cases)
+
 # Each test case is a single 3D image, with no channels
 # The values are integers, with each integer representing a different class (background, different foreground classes)
 for case in tqdm(test_cases):
@@ -311,7 +312,7 @@ for case in tqdm(test_cases):
                 segs = np.zeros_like(gts).astype(np.uint8)  # in case the bbox prediction did not produce a result
             all_segs.append(segs.astype(np.uint8))
 
-            # Refinement clicks
+            # Refinement clicks for each class
             for ind, cls in enumerate(sorted(np.unique(gts)[1:])):
                 if cls == 0:
                     continue  # skip background
@@ -411,6 +412,7 @@ for case in tqdm(test_cases):
                 )
 
         # This command is expected to take (D, H, W) images from one folder and write (D, H, W) segmentations (integer valued) to a different folder
+        # BBoxes either need to be present in the npz file as the "boxes" key, or be in a separate file with prefix "boxes_"
         cmd = f"python3 -m src.submission.ahus_predict --load_path {input_temp} --save_path {output_temp} --model_type {model_type} --model_checkpoint {model_checkpoint} --segmenter_type {segmenter_type} --segmenter_checkpoint {segmenter_checkpoint} --device {device} --size_threshold {size_threshold}"
 
         start_time = time.time()

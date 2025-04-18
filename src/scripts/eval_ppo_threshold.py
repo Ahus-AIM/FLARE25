@@ -1,13 +1,13 @@
 import argparse
 
 import torch
+import wandb
 import yaml
 from monai.transforms.croppad.array import CropForeground
 from torchrl.collectors import SyncDataCollector
 from torchrl.envs import ExplorationType, set_exploration_type
 from tqdm import tqdm
 
-import wandb
 from src.dataset.npz_dataset import NPZDatasetWithLongLabels
 from src.model.build_ahus_model import model_registry
 from src.rl.agents import PPOThresholdAgent

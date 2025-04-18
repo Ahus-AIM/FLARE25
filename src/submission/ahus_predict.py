@@ -160,16 +160,32 @@ class InferencePipeline:
 
     def _handle_boxes(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Ensure that the 'boxes' information is present.
+        Add 'boxes' information if present.
           - If already in data, save it to an auxiliary file.
-          - Otherwise, load it from the auxiliary file.
+          - If in a auxiliary file, load it.
+          - Otherwise, create a bbox covering the whole image.
         """
         boxes_path: str = self._get_auxiliary_path(self.full_file, "boxes_")
         if "boxes" in data:
             self._save_npz(boxes_path, boxes=data["boxes"])
-        else:
+        elif os.path.exists(boxes_path):
             boxes_data: Dict[str, Any] = self._load_npz(boxes_path)
             data["boxes"] = boxes_data["boxes"]
+        else:  # create a bbox covering the whole image
+            image_shape = data["imgs"].shape
+            # TODO: check if this is correct
+            data["boxes"] = [
+                {
+                    "z_min": 0,
+                    "z_max": image_shape[0],
+                    "z_mid_y_min": 0,
+                    "z_mid_y_max": image_shape[1],
+                    "z_mid_x_min": 0,
+                    "z_mid_x_max": image_shape[2],
+                }
+            ]
+            self._save_npz(boxes_path, boxes=data["boxes"])
+
         return data
 
     def _handle_mask_logits(self, data: Dict[str, Any]) -> Dict[str, Any]:
