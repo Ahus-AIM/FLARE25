@@ -191,6 +191,7 @@ parser.add_argument(
     required=True,
     help="Path to the model weights.",
 )
+parser.add_argument("--model_device", type=str, required=True, help="Which device to run the image model on.")
 parser.add_argument(
     "--segmenter_type",
     type=str,
@@ -204,7 +205,12 @@ parser.add_argument(
     required=False,  # Some segmenters do not require a checkpoint
     help="Path to saved segmenter.",
 )
-parser.add_argument("--device", type=str, required=True, help="Device to run the inference on.")
+parser.add_argument(
+    "--segmenter_device",
+    type=str,
+    required=True,  # Some segmenters do not require a checkpoint
+    help="Which device to run the segmenter on.",
+)
 parser.add_argument("--size_threshold", type=int, required=True, help="Size of the input image.")
 
 
@@ -216,9 +222,10 @@ validation_gts_path = args.validation_gts_path
 verbose = args.verbose
 model_type = args.model_type
 model_checkpoint = args.model_checkpoint
+model_device = args.model_device
 segmenter_type = args.segmenter_type
 segmenter_checkpoint = args.segmenter_checkpoint
-device = args.device
+segmenter_device = args.segmenter_device
 size_threshold = args.size_threshold
 
 input_temp = "./inputs/"
@@ -413,7 +420,7 @@ for case in tqdm(test_cases):
 
         # This command is expected to take (D, H, W) images from one folder and write (D, H, W) segmentations (integer valued) to a different folder
         # BBoxes either need to be present in the npz file as the "boxes" key, or be in a separate file with prefix "boxes_"
-        cmd = f"python3 -m src.submission.ahus_predict --load_path {input_temp} --save_path {output_temp} --model_type {model_type} --model_checkpoint {model_checkpoint} --segmenter_type {segmenter_type} --segmenter_checkpoint {segmenter_checkpoint} --device {device} --size_threshold {size_threshold}"
+        cmd = f"python3 -m src.submission.ahus_predict --load_path {input_temp} --save_path {output_temp} --model_type {model_type} --model_checkpoint {model_checkpoint} --model_device {model_device} --segmenter_type {segmenter_type} --segmenter_checkpoint {segmenter_checkpoint} --segmenter_device {segmenter_device} --size_threshold {size_threshold}"
 
         start_time = time.time()
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)

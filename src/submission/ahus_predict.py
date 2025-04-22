@@ -68,6 +68,8 @@ class VolumeTransforms:
     def preprocess_volume(self, image5D: torch.Tensor) -> torch.Tensor:
         image5D = image5D.clone()
         self.orig_shape = image5D.shape[-3:]
+
+        # Normalize
         image5D = self._normalize_volume(image5D)
 
         # Downsample with tracking
@@ -85,6 +87,9 @@ class VolumeTransforms:
         return image5D
 
     def transform_coordinates(self, coords: torch.Tensor, direction: str = "forward") -> torch.Tensor:
+        """
+        Returns coordinates in the cropped/pooled space.
+        """
         coords = coords.clone()
         if direction == "forward":
             for i in range(3):
@@ -131,7 +136,9 @@ class VolumeTransforms:
 class InferencePipeline:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args: argparse.Namespace = args
-        self.device: str = args.device
+        # Model device is prioritized over segmenter device for general operations
+        self.model_device: str = args.model_device
+        self.segmenter_device: str = args.segmenter_device
         self.model: torch.nn.Module = self._load_model()
         self.segmenter = self._load_segmenter()
         self.coord_handler: VolumeTransforms = VolumeTransforms(args.size_threshold)
@@ -171,17 +178,18 @@ class InferencePipeline:
         elif os.path.exists(boxes_path):
             boxes_data: Dict[str, Any] = self._load_npz(boxes_path)
             data["boxes"] = boxes_data["boxes"]
-        else:  # create a bbox covering the whole image
+        else:  # create a bbox covering the whole image (1 pixel margin)
             image_shape = data["imgs"].shape
-            # TODO: check if this is correct
             data["boxes"] = [
                 {
-                    "z_min": 0,
-                    "z_max": image_shape[0],
-                    "z_mid_y_min": 0,
-                    "z_mid_y_max": image_shape[1],
-                    "z_mid_x_min": 0,
-                    "z_mid_x_max": image_shape[2],
+                    # First point
+                    "z_min": 1,
+                    "z_mid_y_min": 1,
+                    "z_mid_x_min": 1,
+                    # Second point
+                    "z_max": image_shape[0] - 2,
+                    "z_mid_y_max": image_shape[1] - 2,
+                    "z_mid_x_max": image_shape[2] - 2,
                 }
             ]
             self._save_npz(boxes_path, boxes=data["boxes"])
@@ -221,7 +229,7 @@ class InferencePipeline:
         for i, box in enumerate(boxes):
             boxes_tensor[i, 0, :] = torch.tensor([box["z_min"], box["z_mid_y_min"], box["z_mid_x_min"]])
             boxes_tensor[i, 1, :] = torch.tensor([box["z_max"], box["z_mid_y_max"], box["z_mid_x_max"]])
-        return boxes_tensor.to(self.device)
+        return boxes_tensor.to(self.model_device)
 
     def _get_points(self, data: Dict[str, Any]) -> Optional[List[torch.Tensor]]:
         """
@@ -240,12 +248,12 @@ class InferencePipeline:
                 points[i, j, :] = torch.tensor(point)
                 click_types[i, j] = 1 if j < len(click["fg"]) else 0
 
-        return [points.to(self.device), click_types.to(self.device)]
+        return [points.to(self.model_device), click_types.to(self.model_device)]
 
     def _get_mask_logits(self, data: Dict[str, Any]) -> Optional[torch.Tensor]:
         mask_logits: Any = data.get("mask_logits", None)
         if mask_logits is not None:
-            mask_logits = mask_logits.to(self.device)
+            mask_logits = mask_logits.to(self.model_device)
         return mask_logits
 
     def _get_spacing(self, data: Dict[str, Any]) -> np.ndarray:
@@ -257,14 +265,18 @@ class InferencePipeline:
         np.savez(mask_logits_path, mask_logits=mask_logits.cpu().numpy())
 
     def _load_model(self) -> torch.nn.Module:
-        model: torch.nn.Module = model_registry[self.args.model_type]().to(self.device)
-        ckpt: Dict[str, Any] = torch.load(self.args.model_checkpoint, map_location=self.device, weights_only=False)
+        model: torch.nn.Module = model_registry[self.args.model_type]().to(self.model_device)
+        ckpt: Dict[str, Any] = torch.load(
+            self.args.model_checkpoint, map_location=self.model_device, weights_only=False
+        )
         model.load_state_dict(ckpt["model_state_dict"], strict=True)
         model.eval()
         return model
 
     def _load_segmenter(self) -> Segmenter:
-        segmenter = segmenter_registry[self.args.segmenter_type].load(self.args.segmenter_checkpoint, self.device)
+        segmenter = segmenter_registry[self.args.segmenter_type].load(
+            self.args.segmenter_checkpoint, torch.device(self.args.segmenter_device)
+        )
         return segmenter
 
     def _expand_image_embeddings(self, image_embeddings: List[torch.Tensor], batch_dim: int):
@@ -309,11 +321,24 @@ class InferencePipeline:
         mask_logits: Optional[torch.Tensor] = self._get_mask_logits(data)
         spacing: np.ndarray = self._get_spacing(data)
 
-        image5D: torch.Tensor = self._transform(data["imgs"]).to(self.device)  # shape (1, 1, D, H, W)
+        image5D: torch.Tensor = self._transform(data["imgs"]).to(self.model_device)  # shape (1, 1, D, H, W)
         image5D, mask_logits, points, boxes = self.coord_handler.forward(image5D, spacing, mask_logits, points, boxes)
+
+        # Temporary hack: boxes sometimes has values larger than the image size
+        # Clip the boxes to the image size
+        # TODO: fix this properly
+        boxes[..., 0] = boxes[..., 0].clamp(0, image5D.shape[2] - 1)
+        boxes[..., 1] = boxes[..., 1].clamp(0, image5D.shape[3] - 1)
+        boxes[..., 2] = boxes[..., 2].clamp(0, image5D.shape[4] - 1)
+        # Do the same for point coordinates
+        if points is not None:
+            points[0][..., 0] = points[0][..., 0].clamp(0, image5D.shape[2] - 1)
+            points[0][..., 1] = points[0][..., 1].clamp(0, image5D.shape[3] - 1)
+            points[0][..., 2] = points[0][..., 2].clamp(0, image5D.shape[4] - 1)
+
         # autocast
         # `model` assumes batch dimension
-        with torch.autocast(device_type=self.device.split(":")[0]):
+        with torch.autocast(device_type=self.model_device.split(":")[0]):
             # image_embeddings: list[(1, C, D, H, W)]
             image_embeddings, _ = self.model.segresnet(image5D)
             # mask_logits: (I, 1, D, H, W)
@@ -331,13 +356,15 @@ class InferencePipeline:
         else:
             point_coords = points[0]
             point_labels = points[1]
-        binarized_pred: Integer[torch.Tensor, "image_depth image_height image_width"] = self.segmenter(
-            logits=mask_logits_orig_shape,
-            image=image5D,
-            bbox=boxes,
-            point_coords=point_coords,
-            point_labels=point_labels,
-        )
+
+        with torch.autocast(device_type=self.segmenter_device.split(":")[0]):
+            binarized_pred: Integer[torch.Tensor, "image_depth image_height image_width"] = self.segmenter(
+                logits=mask_logits_orig_shape.to(self.segmenter.device),  # TODO: why is this device call necessary?
+                image=image5D.to(self.segmenter.device),
+                bbox=boxes.to(self.segmenter.device),
+                point_coords=point_coords.to(self.segmenter.device) if point_coords is not None else None,
+                point_labels=point_labels.to(self.segmenter.device) if point_labels is not None else None,
+            )
 
         # Log function expects numpy arrays for image and segmentations
         binarized_pred_np = binarized_pred.cpu().numpy()
@@ -410,6 +437,7 @@ if __name__ == "__main__":
         required=True,
         help="Path to the model weights.",
     )
+    parser.add_argument("--model_device", type=str, required=True, help="Which device to run the image model on.")
     parser.add_argument(
         "--segmenter_type",
         type=str,
@@ -423,7 +451,12 @@ if __name__ == "__main__":
         required=False,  # Some segmenters do not require a checkpoint
         help="Path to saved segmenter.",
     )
-    parser.add_argument("--device", type=str, required=True, help="Device to run the inference on.")
+    parser.add_argument(
+        "--segmenter_device",
+        type=str,
+        required=True,  # Some segmenters do not require a checkpoint
+        help="Which device to run the segmenter on.",
+    )
     parser.add_argument("--size_threshold", type=int, required=True, help="Size of the input image.")
 
     args: argparse.Namespace = parser.parse_args()

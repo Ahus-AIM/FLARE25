@@ -11,7 +11,7 @@ __pycache__/*
 src/scripts/tmp_folders*
 inputs/*
 outputs/*
-demo_seg/*
+demo_seg*/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
