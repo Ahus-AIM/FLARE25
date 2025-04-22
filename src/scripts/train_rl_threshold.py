@@ -10,9 +10,9 @@ from tqdm import tqdm
 import wandb
 from src.dataset.npz_dataset import NPZDatasetWithLongLabels
 from src.model.build_ahus_model import model_registry
-from src.rl.agents import PPOThresholdAgent
+from src.rl.agents import THRESHOLD_AGENT_REGISTRY, ThresholdAgent
 from src.rl.mdp_env import get_env
-from src.rl.utils import calculate_norm, dict_to_namespace
+from src.rl.utils import dict_to_namespace
 
 
 def main():
@@ -47,7 +47,16 @@ def main():
 
     env = get_env(ahus_model=ahus_model, device=device, dataset=dataset)
 
-    agent = PPOThresholdAgent(device=device, lr=config.agent.lr, max_grad_norm=config.agent.max_grad_norm)
+    td = env.reset()
+    td = env.rand_step(td)
+    td = env.rollout(100)
+
+    # Static type is ThresholdAgent, dynamic type is chosen by config
+    agent_cls = THRESHOLD_AGENT_REGISTRY[config.agent.type]
+    agent: ThresholdAgent = agent_cls(
+        device=device,
+        **config_dict["agent"]["kwargs"],
+    )
 
     collector = SyncDataCollector(
         env,
@@ -74,12 +83,11 @@ def main():
             # Log network parameter norm
             wandb.log(
                 {
-                    "value norm": calculate_norm(agent.value_net),
-                    "actor norm": calculate_norm(agent.actor_net),
                     "reward": td["next", "reward"].mean().item(),
                     "threshold": td["threshold"].mean().item(),
-                    "loss": loss.item(),
+                    "loss": loss,
                     "grad_norm": grad_norm,
+                    **agent.get_info(),
                 }
             )
 
@@ -102,7 +110,7 @@ def main():
 
     # Save model
     print("Saving model...", end="")
-    agent.save(config.agent.save_folder_path)
+    agent.save(config.agent.save_path)
     print("done.")
     wandb.finish()
 

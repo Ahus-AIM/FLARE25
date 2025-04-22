@@ -13,8 +13,12 @@ dataset:
   size_threshold: 2097152 # 128^3
   base_dir: "/data/3D_val_complete_small"
 agent:
-  type: "PPO"
+  type: "DDPG"
   kwargs:
     lr: 0.00001
+    update_tau: 0.01
+    replay_buffer_size: 1000
+    replay_buffer_device: "cpu"
+    num_optim: 10
     max_grad_norm: 100
   save_path: "/weights/rl/trained.pth"

@@ -333,6 +333,13 @@ def get_reward_fn() -> RewardFn:
     return reward_fn
 
 
+def infinite_loader(dataset, batch_size=1, shuffle=True):
+    while True:
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+        for batch in loader:
+            yield batch
+
+
 def get_env(ahus_model: AhusModel, device: torch.device, dataset: NPZDataset):
     env = InteractiveSegmentationEnv(
         n_steps=5,
@@ -341,12 +348,10 @@ def get_env(ahus_model: AhusModel, device: torch.device, dataset: NPZDataset):
         post_processing_fn=get_post_processing_fn(),
         interaction_fn=get_interaction_fn(),
         reward_fn=get_reward_fn(),
-        dataset_iter=iter(
-            DataLoader(
-                dataset,
-                batch_size=1,
-                shuffle=True,
-            )
+        dataset_iter=infinite_loader(
+            dataset,
+            batch_size=1,
+            shuffle=True,
         ),
         device=device,
     )

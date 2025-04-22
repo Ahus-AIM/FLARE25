@@ -4,6 +4,7 @@ This command is expected to take (D, H, W) images from one folder and write (D, 
 
 import argparse
 import os
+from contextlib import nullcontext
 from typing import Any, Dict, List, Optional
 
 import nibabel as nib
@@ -131,6 +132,15 @@ class VolumeTransforms:
 
         # Upsample back to original size
         return F.interpolate(mask_logits, size=self.orig_shape, mode="trilinear", align_corners=False)
+
+
+def safe_autocast(device_type: str):
+    if device_type == "cuda":
+        return torch.autocast(device_type=device_type)
+    elif device_type == "cpu":
+        return torch.autocast(device_type=device_type)
+    else:
+        return nullcontext()
 
 
 class InferencePipeline:
@@ -338,7 +348,7 @@ class InferencePipeline:
 
         # autocast
         # `model` assumes batch dimension
-        with torch.autocast(device_type=self.model_device.split(":")[0]):
+        with safe_autocast(device_type=self.model_device.split(":")[0]):
             # image_embeddings: list[(1, C, D, H, W)]
             image_embeddings, _ = self.model.segresnet(image5D)
             # mask_logits: (I, 1, D, H, W)
@@ -357,7 +367,7 @@ class InferencePipeline:
             point_coords = points[0]
             point_labels = points[1]
 
-        with torch.autocast(device_type=self.segmenter_device.split(":")[0]):
+        with safe_autocast(device_type=self.segmenter_device.split(":")[0]):
             binarized_pred: Integer[torch.Tensor, "image_depth image_height image_width"] = self.segmenter(
                 logits=mask_logits_orig_shape.to(self.segmenter.device),  # TODO: why is this device call necessary?
                 image=image5D.to(self.segmenter.device),
