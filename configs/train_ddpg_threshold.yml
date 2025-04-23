@@ -3,7 +3,7 @@ wandb:
   project: "medseg-train-ddpg-threshold"
 ahus_model:
   type: "ahus_model_rope_mixed"
-  weights_path: "/weights/rope_mixed/latest.pth"
+  weights_path: "$WEIGHTS_DIR/rope_mixed/latest.pth"
 
 device: "cpu"
 total_frames: 1000
@@ -11,7 +11,7 @@ eval_every_n_batches: 100
 eval_max_steps: 10
 dataset:
   size_threshold: 2097152 # 128^3
-  base_dir: "/data/3D_val_combined_small"
+  base_dir: "$DATA_DIR/3D_val_combined_small"
 agent:
   type: "DDPG"
   kwargs:
@@ -21,4 +21,4 @@ agent:
     replay_buffer_device: "cpu"
     num_optim: 10
     max_grad_norm: 100
-  save_path: "/weights/rl/ddpg_threshold.pth"
+  save_path: "$WEIGHTS_DIR/rl/ddpg_threshold.pth"

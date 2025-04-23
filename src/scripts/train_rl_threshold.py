@@ -1,7 +1,9 @@
 import argparse
+from os.path import expandvars
 
 import torch
 import yaml
+from dotenv import load_dotenv
 from monai.transforms.croppad.array import CropForeground
 from torchrl.collectors import SyncDataCollector
 from torchrl.envs import ExplorationType, set_exploration_type
@@ -13,6 +15,8 @@ from src.model.build_ahus_model import model_registry
 from src.rl.agents import THRESHOLD_AGENT_REGISTRY, ThresholdAgent
 from src.rl.mdp_env import get_env
 from src.rl.utils import dict_to_namespace
+
+load_dotenv()
 
 
 def main():
@@ -33,13 +37,13 @@ def main():
     ahus_model = ahus_model.to(device)
 
     # Load checkpoint, assuming it is stored in the "weights" directory
-    ckpt = torch.load(config.ahus_model.weights_path, map_location=device, weights_only=False)
+    ckpt = torch.load(expandvars(config.ahus_model.weights_path), map_location=device, weights_only=False)
     ahus_model.load_state_dict(ckpt["model_state_dict"], strict=True)
     ahus_model.eval()
     ahus_model.requires_grad_(False)
 
     dataset = NPZDatasetWithLongLabels(
-        base_dir=config.dataset.base_dir,
+        base_dir=expandvars(config.dataset.base_dir),
         size_threshold=config.dataset.size_threshold,
         transform=CropForeground(select_fn=lambda x: x > 0, k_divisible=8, allow_smaller=True),
         data_suffix="npz",
@@ -110,8 +114,8 @@ def main():
         print("Training interrupted.")
 
     # Save model
-    print(f"Saving model to {config.agent.save_path}...", end="")
-    agent.save(config.agent.save_path)
+    print(f"Saving model to {expandvars(config.agent.save_path)}...", end="")
+    agent.save(expandvars(config.agent.save_path))
     print("done.")
     wandb.finish()
 

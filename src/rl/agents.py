@@ -213,7 +213,6 @@ class DDPGThresholdAgent(ThresholdAgent):
         lr: float,
         update_tau: float,
         replay_buffer_size,
-        replay_buffer_device: torch.device,
         num_optim: int,
         max_grad_norm=1.0,
     ):
@@ -221,7 +220,6 @@ class DDPGThresholdAgent(ThresholdAgent):
         self.lr = lr
         self.update_tau = update_tau
         self.replay_buffer_size = replay_buffer_size
-        self.replay_buffer_device = replay_buffer_device
         self.num_optim = num_optim
         self.max_grad_norm = max_grad_norm
 
