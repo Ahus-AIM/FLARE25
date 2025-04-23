@@ -1,7 +1,14 @@
 import argparse
+import os
 from os.path import expandvars
 
 import torch
+
+print("CUDA_VISIBLE_DEVICES =", os.environ.get("CUDA_VISIBLE_DEVICES"))
+print("torch.cuda.is_available() =", torch.cuda.is_available())
+print("torch.cuda.device_count() =", torch.cuda.device_count())
+
+
 import yaml
 from dotenv import load_dotenv
 from monai.transforms.croppad.array import CropForeground
