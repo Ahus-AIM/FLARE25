@@ -5,7 +5,7 @@ from jaxtyping import Integer
 from tensordict import TensorDict
 
 from src.custom_types import BBox, Image, Mask, PointCoords, PointLabels, Segmentation
-from src.rl.agents import PPOThresholdAgent
+from src.rl.agents import DDPGThresholdAgent
 
 
 class Segmenter(Protocol):
@@ -67,12 +67,12 @@ def thresholded_argmax_segmentation(
     return padded_logits.argmax(dim=0).squeeze(0)  # (D, H, W)
 
 
-class PPOThresholdAgentSegmenter(Segmenter):
+class DDPGThresholdAgentSegmenter(Segmenter):
     """
     Wraps a PPOThresholdAgent to implement the Segmenter protocol.
     """
 
-    def __init__(self, agent: PPOThresholdAgent, max_iter: int = 10):
+    def __init__(self, agent: DDPGThresholdAgent, max_iter: int = 10):
         self.agent = agent
         self.device = self.agent.device
         self.max_iter = max_iter
@@ -141,8 +141,8 @@ class PPOThresholdAgentSegmenter(Segmenter):
 
     @staticmethod
     def load(path: str, device: torch.device) -> "Segmenter":
-        agent = PPOThresholdAgent.load(path, device)
-        return PPOThresholdAgentSegmenter(agent)
+        agent = DDPGThresholdAgent.load(path, device)
+        return DDPGThresholdAgentSegmenter(agent)
 
 
 class OriginalSegmenter(Segmenter):
@@ -202,6 +202,6 @@ class OriginalSegmenter(Segmenter):
 
 
 segmenter_registry = {
-    "ppo_threshold": PPOThresholdAgentSegmenter,
+    "ddpg_threshold": DDPGThresholdAgentSegmenter,
     "original": OriginalSegmenter,
 }

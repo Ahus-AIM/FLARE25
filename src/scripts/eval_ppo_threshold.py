@@ -45,7 +45,7 @@ def main():
         data_suffix="npz",
     )
 
-    env = get_env(ahus_model=ahus_model, device=device, dataset=dataset)
+    env = get_env(ahus_model=ahus_model, env_device=device, dataset=dataset)
 
     agent = PPOThresholdAgent.load(path=config.agent.load_folder_path, device=device)
 

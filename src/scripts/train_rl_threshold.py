@@ -38,13 +38,13 @@ def main():
 
     config = dict_to_namespace(config_dict)
 
-    device = torch.device(config.device)
-
     ahus_model = model_registry[config.ahus_model.type]()
-    ahus_model = ahus_model.to(device)
+    ahus_model = ahus_model.to(config.ahus_model.device)
 
     # Load checkpoint, assuming it is stored in the "weights" directory
-    ckpt = torch.load(expandvars(config.ahus_model.weights_path), map_location=device, weights_only=False)
+    ckpt = torch.load(
+        expandvars(config.ahus_model.weights_path), map_location=config.ahus_model.device, weights_only=False
+    )
     ahus_model.load_state_dict(ckpt["model_state_dict"], strict=True)
     ahus_model.eval()
     ahus_model.requires_grad_(False)
@@ -56,8 +56,11 @@ def main():
         data_suffix="npz",
     )
 
-    env = get_env(ahus_model=ahus_model, device=device, dataset=dataset)
+    env = get_env(
+        ahus_model=ahus_model, ahus_model_device=config.ahus_model.device, env_device=config.env.device, dataset=dataset
+    )
 
+    # Just a test
     td = env.reset()
     td = env.rand_step(td)
     td = env.rollout(100)
@@ -65,7 +68,7 @@ def main():
     # Static type is ThresholdAgent, dynamic type is chosen by config
     agent_cls = THRESHOLD_AGENT_REGISTRY[config.agent.type]
     agent: ThresholdAgent = agent_cls(
-        device=device,
+        device=config.agent.device,
         **config_dict["agent"]["kwargs"],
     )
 
@@ -74,7 +77,9 @@ def main():
         agent.policy,
         frames_per_batch=1,
         total_frames=config.total_frames,
-        device=device,
+        storing_device="cpu",  # Since we do logging anyways
+        env_device=config.env.device,
+        policy_device=config.agent.device,
         trust_policy=True,
     )
 
@@ -89,7 +94,7 @@ def main():
             # Agent and batch dimension are collapsed
             td = td.reshape(-1, *td.shape[2:])
 
-            loss, grad_norm = agent.process_batch(td)
+            loss, grad_norm = agent.process_batch(td.to(config.agent.device))
 
             # Log network parameter norm
             wandb.log(
@@ -110,6 +115,10 @@ def main():
                     set_exploration_type(ExplorationType.DETERMINISTIC),
                 ):
                     eval_td = env.rollout(max_steps=config.eval_max_steps, policy=agent.policy)
+
+                    # Move to cpu for logging
+                    eval_td = eval_td.to("cpu")
+
                     # Log evaluation results
                     wandb.log(
                         {

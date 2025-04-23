@@ -187,22 +187,23 @@ class PPOThresholdAgent(ThresholdAgent):
 
 
 class DDPGThresholdValueNet(nn.Module):
-    def __init__(self, backbone: nn.Module, backbone_out_size: int):
+    def __init__(self, backbone: nn.Module, backbone_out_size: int, device: torch.device):
         super().__init__()
         self.backbone = backbone
         assert backbone_out_size // 2 >= 2, "Backbone output size must be at least 4"
         self.backbone_out_size = backbone_out_size
+        self.device = device
         self.head = nn.Sequential(
             nn.Linear(backbone_out_size + 1, backbone_out_size // 2),
             nn.ReLU(),
             nn.Linear(backbone_out_size // 2, 1),
-        )
+        ).to(self.device)
 
     def forward(self, mask: Tensor, threshold: Tensor) -> Tensor:
         # Pass mask through the backbone
-        x = self.backbone(mask)  # (N, backbone_out_size)
+        x = self.backbone(mask.to(self.device))  # (N, backbone_out_size)
         # Concatenate the threshold to the output of the backbone
-        x = torch.cat((x, threshold), dim=1)  # (N, backbone_out_size + 1)
+        x = torch.cat((x, threshold.to(self.device)), dim=1)  # (N, backbone_out_size + 1)
         return self.head(x)
 
 
@@ -232,7 +233,7 @@ class DDPGThresholdAgent(ThresholdAgent):
             nn.ReLU(),
             nn.AdaptiveMaxPool3d(output_size=(1, 1, 1)),  # -> (N, 64, 1, 1, 1)
             nn.Flatten(start_dim=1),  # -> (N, 64)
-        )
+        ).to(self.device)
 
         # Define the actor network
         self.actor_net = nn.Sequential(
@@ -246,7 +247,8 @@ class DDPGThresholdAgent(ThresholdAgent):
         self.value_net = DDPGThresholdValueNet(
             backbone=self.backbone,
             backbone_out_size=64,
-        ).to(self.device)
+            device=self.device,
+        )
 
         self.value_module = TensorDictModule(
             module=self.value_net, in_keys=["mask", "threshold"], out_keys=["state_action_value"]
@@ -264,7 +266,7 @@ class DDPGThresholdAgent(ThresholdAgent):
         self.replay_buffer = TensorDictReplayBuffer(storage=ListStorage(self.replay_buffer_size))
 
     def policy(self, td: TensorDictBase) -> TensorDictBase:
-        return self.policy_module(td)
+        return self.policy_module(td.to(self.device))
 
     def _sample_and_optimize(self):
         """
@@ -272,6 +274,9 @@ class DDPGThresholdAgent(ThresholdAgent):
         """
         # Sample a batch from the replay buffer
         td = self.replay_buffer.sample(1)
+
+        # Move the batch to the device
+        td = td.to(self.device)
 
         # Zero the gradients
         self.optim.zero_grad()
@@ -298,7 +303,7 @@ class DDPGThresholdAgent(ThresholdAgent):
         """
 
         # Add the batch to the replay buffer
-        self.replay_buffer.extend(td)
+        self.replay_buffer.extend(td.to("cpu"))
 
         # Sample num_optim times from the replay buffer and optimize
         losses = torch.zeros(self.num_optim, device=self.device)
@@ -329,7 +334,6 @@ class DDPGThresholdAgent(ThresholdAgent):
                 "lr": self.lr,
                 "update_tau": self.update_tau,
                 "replay_buffer_size": self.replay_buffer_size,
-                "replay_buffer_device": self.replay_buffer_device,
                 "num_optim": self.num_optim,
                 "max_grad_norm": self.max_grad_norm,
             },
@@ -358,14 +362,13 @@ class DDPGThresholdAgent(ThresholdAgent):
             lr=config["lr"],
             update_tau=config["update_tau"],
             replay_buffer_size=config["replay_buffer_size"],
-            replay_buffer_device=config["replay_buffer_device"],
             num_optim=config["num_optim"],
             max_grad_norm=config["max_grad_norm"],
         )
 
         # Load the model weights
-        agent.policy_module.load_state_dict(data["policy_state_dict"])
-        agent.value_module.load_state_dict(data["value_state_dict"])
+        agent.policy_module.load_state_dict(data["policy_module_state_dict"])
+        agent.value_module.load_state_dict(data["value_module_state_dict"])
 
         return agent
 

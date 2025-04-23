@@ -279,14 +279,19 @@ class InteractiveSegmentationEnv(EnvBase):
         )
 
 
-def get_image_embedder_fn(ahus_model: AhusModel) -> ImageEmbedderFn:
+def get_image_embedder_fn(
+    ahus_model: AhusModel, ahus_model_device: torch.device, env_device: torch.device
+) -> ImageEmbedderFn:
     def image_embedder_fn(image: Image) -> List[ImageEmbedding]:
-        return ahus_model.image_encoder(image)
+        image_embeddings = ahus_model.image_encoder(image.to(ahus_model_device))
+        # Move the embeddings to the env device
+        image_embeddings = [emb.to(env_device) for emb in image_embeddings]
+        return image_embeddings
 
     return image_embedder_fn
 
 
-def get_mask_fn(ahus_model: AhusModel) -> MaskFn:
+def get_mask_fn(ahus_model: AhusModel, ahus_model_device: torch.device, env_device: torch.device) -> MaskFn:
     def mask_fn(
         image_embeddings: List[ImageEmbedding],
         bbox: BBox,
@@ -296,7 +301,14 @@ def get_mask_fn(ahus_model: AhusModel) -> MaskFn:
     ) -> Mask:
         # TODO: this looks bad
         image_embeddings = image_embeddings[::-1]
-        return decoder_forward(ahus_model, image_embeddings, mask, (point_coords, point_labels), bbox)
+        image_embeddings = [emb.to(ahus_model_device) for emb in image_embeddings]
+        return decoder_forward(
+            ahus_model,
+            image_embeddings,
+            mask.to(ahus_model_device),
+            (point_coords.to(ahus_model_device), point_labels.to(ahus_model_device)),
+            bbox.to(ahus_model_device),
+        ).to(env_device)
 
     return mask_fn
 
@@ -340,11 +352,11 @@ def infinite_loader(dataset, batch_size=1, shuffle=True):
             yield batch
 
 
-def get_env(ahus_model: AhusModel, device: torch.device, dataset: NPZDataset):
+def get_env(ahus_model: AhusModel, ahus_model_device: torch.device, env_device: torch.device, dataset: NPZDataset):
     env = InteractiveSegmentationEnv(
         n_steps=5,
-        image_embedder_fn=get_image_embedder_fn(ahus_model),
-        mask_fn=get_mask_fn(ahus_model),
+        image_embedder_fn=get_image_embedder_fn(ahus_model, ahus_model_device, env_device=env_device),
+        mask_fn=get_mask_fn(ahus_model, ahus_model_device=ahus_model_device, env_device=env_device),
         post_processing_fn=get_post_processing_fn(),
         interaction_fn=get_interaction_fn(),
         reward_fn=get_reward_fn(),
@@ -353,6 +365,6 @@ def get_env(ahus_model: AhusModel, device: torch.device, dataset: NPZDataset):
             batch_size=1,
             shuffle=True,
         ),
-        device=device,
+        device=env_device,
     )
     return env

@@ -146,7 +146,7 @@ def test_mdp_no_errors():
         reward_fn=get_reward_fn(),
         # only use training data
         dataset_iter=MockDatasetIter(),
-        device=device,
+        env_device=device,
     )
     check_env_specs(env)
 
