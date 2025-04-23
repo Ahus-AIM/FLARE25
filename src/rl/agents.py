@@ -5,7 +5,7 @@ from tensordict import TensorDictBase
 from tensordict.nn import TensorDictModule
 from torch import Tensor, nn
 from torchrl.data import Bounded, ListStorage, TensorDictReplayBuffer
-from torchrl.modules import Actor, NormalParamExtractor, ProbabilisticActor, TanhNormal, ValueOperator
+from torchrl.modules import NormalParamExtractor, ProbabilisticActor, TanhNormal, ValueOperator
 from torchrl.objectives import ClipPPOLoss, DDPGLoss, SoftUpdate
 
 from src.rl.utils import calculate_norm
@@ -59,14 +59,14 @@ class PPOThresholdAgent(ThresholdAgent):
             nn.ReLU(),
             nn.Conv3d(32, 64, kernel_size=3, stride=2, padding=1),  # -> (N, 64, D/8, H/8, W/8)
             nn.ReLU(),
-            nn.AdaptiveMaxPool3d(output_size=(3, 3, 3)),  # -> (N, 64, 3, 3, 3)
-            nn.Flatten(start_dim=1),  # -> (N, 64 * 3 * 3 * 3) = (N, 1728)
+            nn.AdaptiveMaxPool3d(output_size=(1, 1, 1)),  # -> (N, 64, 1, 1, 1)
+            nn.Flatten(start_dim=1),  # -> (N, 64)
         )
 
         # Define the actor network
         self.actor_net = nn.Sequential(
             self.backbone,
-            nn.Linear(64 * 3 * 3 * 3, 2),
+            nn.Linear(64, 2),
             NormalParamExtractor(),
         ).to(self.device)
 
@@ -82,7 +82,7 @@ class PPOThresholdAgent(ThresholdAgent):
             return_log_prob=True,
         )
 
-        self.value_net = nn.Sequential(self.backbone, nn.Linear(64 * 3 * 3 * 3, 1)).to(self.device)
+        self.value_net = nn.Sequential(self.backbone, nn.Linear(64, 1)).to(self.device)
 
         self.value_module = ValueOperator(module=self.value_net, in_keys=["mask"])
         # self.advantage_module = GAE(
@@ -186,6 +186,26 @@ class PPOThresholdAgent(ThresholdAgent):
         return info
 
 
+class DDPGThresholdValueNet(nn.Module):
+    def __init__(self, backbone: nn.Module, backbone_out_size: int):
+        super().__init__()
+        self.backbone = backbone
+        assert backbone_out_size // 2 >= 2, "Backbone output size must be at least 4"
+        self.backbone_out_size = backbone_out_size
+        self.head = nn.Sequential(
+            nn.Linear(backbone_out_size + 1, backbone_out_size // 2),
+            nn.ReLU(),
+            nn.Linear(backbone_out_size // 2, 1),
+        )
+
+    def forward(self, mask: Tensor, threshold: Tensor) -> Tensor:
+        # Pass mask through the backbone
+        x = self.backbone(mask)  # (N, backbone_out_size)
+        # Concatenate the threshold to the output of the backbone
+        x = torch.cat((x, threshold), dim=1)  # (N, backbone_out_size + 1)
+        return self.head(x)
+
+
 class DDPGThresholdAgent(ThresholdAgent):
     def __init__(
         self,
@@ -212,22 +232,27 @@ class DDPGThresholdAgent(ThresholdAgent):
             nn.ReLU(),
             nn.Conv3d(32, 64, kernel_size=3, stride=2, padding=1),  # -> (N, 64, D/8, H/8, W/8)
             nn.ReLU(),
-            nn.AdaptiveMaxPool3d(output_size=(3, 3, 3)),  # -> (N, 64, 3, 3, 3)
-            nn.Flatten(start_dim=1),  # -> (N, 64 * 3 * 3 * 3) = (N, 1728)
+            nn.AdaptiveMaxPool3d(output_size=(1, 1, 1)),  # -> (N, 64, 1, 1, 1)
+            nn.Flatten(start_dim=1),  # -> (N, 64)
         )
 
         # Define the actor network
         self.actor_net = nn.Sequential(
             self.backbone,
-            nn.Linear(64 * 3 * 3 * 3, 1),
+            nn.Linear(64, 1),
             nn.Sigmoid(),
         ).to(self.device)
 
-        self.policy_module = Actor(self.actor_net, in_keys=["mask"], out_keys=["threshold"])
+        self.policy_module = TensorDictModule(self.actor_net, in_keys=["mask"], out_keys=["threshold"])
 
-        self.value_net = nn.Sequential(self.backbone, nn.Linear(64 * 3 * 3 * 3, 1)).to(self.device)
+        self.value_net = DDPGThresholdValueNet(
+            backbone=self.backbone,
+            backbone_out_size=64,
+        ).to(self.device)
 
-        self.value_module = ValueOperator(module=self.value_net, in_keys=["mask"])
+        self.value_module = TensorDictModule(
+            module=self.value_net, in_keys=["mask", "threshold"], out_keys=["state_action_value"]
+        )
 
         self.loss_module = DDPGLoss(
             actor_network=self.policy_module,
@@ -256,7 +281,7 @@ class DDPGThresholdAgent(ThresholdAgent):
         # Compute the loss
         loss_td = self.loss_module(td)
 
-        loss: Tensor = loss_td["loss_objective"] + loss_td["loss_critic"]
+        loss: Tensor = loss_td["loss_actor"] + loss_td["loss_value"]
 
         # Backpropagation
         loss.backward()
@@ -307,7 +332,6 @@ class DDPGThresholdAgent(ThresholdAgent):
                 "update_tau": self.update_tau,
                 "replay_buffer_size": self.replay_buffer_size,
                 "replay_buffer_device": self.replay_buffer_device,
-                "replay_buffer_batch_size": self.replay_buffer_batch_size,
                 "num_optim": self.num_optim,
                 "max_grad_norm": self.max_grad_norm,
             },
@@ -337,7 +361,6 @@ class DDPGThresholdAgent(ThresholdAgent):
             update_tau=config["update_tau"],
             replay_buffer_size=config["replay_buffer_size"],
             replay_buffer_device=config["replay_buffer_device"],
-            replay_buffer_batch_size=config["replay_buffer_batch_size"],
             num_optim=config["num_optim"],
             max_grad_norm=config["max_grad_norm"],
         )

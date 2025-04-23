@@ -17,4 +17,4 @@ agent:
   kwargs:
     lr: 0.00001
     max_grad_norm: 100
-  save_path: "/weights/rl/trained.pth"
+  save_path: "/weights/rl/ppo_threshold.pth"

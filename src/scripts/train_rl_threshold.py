@@ -83,8 +83,9 @@ def main():
             # Log network parameter norm
             wandb.log(
                 {
-                    "reward": td["next", "reward"].mean().item(),
-                    "threshold": td["threshold"].mean().item(),
+                    "reward": td["next", "reward"].item(),
+                    "threshold": td["threshold"].item(),
+                    "step": td["step"].item(),
                     "loss": loss,
                     "grad_norm": grad_norm,
                     **agent.get_info(),
@@ -109,7 +110,7 @@ def main():
         print("Training interrupted.")
 
     # Save model
-    print("Saving model...", end="")
+    print(f"Saving model to {config.agent.save_path}...", end="")
     agent.save(config.agent.save_path)
     print("done.")
     wandb.finish()
