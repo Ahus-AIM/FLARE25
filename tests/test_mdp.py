@@ -144,9 +144,8 @@ def test_mdp_no_errors():
         post_processing_fn=get_post_processing_fn(),
         interaction_fn=get_interaction_fn(),
         reward_fn=get_reward_fn(),
-        # only use training data
         dataset_iter=MockDatasetIter(),
-        env_device=device,
+        device=device,
     )
     check_env_specs(env)
 

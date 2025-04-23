@@ -3,12 +3,7 @@ import os
 from os.path import expandvars
 
 import torch
-
-print("CUDA_VISIBLE_DEVICES =", os.environ.get("CUDA_VISIBLE_DEVICES"))
-print("torch.cuda.is_available() =", torch.cuda.is_available())
-print("torch.cuda.device_count() =", torch.cuda.device_count())
-
-
+import wandb
 import yaml
 from dotenv import load_dotenv
 from monai.transforms.croppad.array import CropForeground
@@ -16,12 +11,15 @@ from torchrl.collectors import SyncDataCollector
 from torchrl.envs import ExplorationType, set_exploration_type
 from tqdm import tqdm
 
-import wandb
 from src.dataset.npz_dataset import NPZDatasetWithLongLabels
 from src.model.build_ahus_model import model_registry
 from src.rl.agents import THRESHOLD_AGENT_REGISTRY, ThresholdAgent
 from src.rl.mdp_env import get_env
 from src.rl.utils import dict_to_namespace
+
+print("CUDA_VISIBLE_DEVICES =", os.environ.get("CUDA_VISIBLE_DEVICES"))
+print("torch.cuda.is_available() =", torch.cuda.is_available())
+print("torch.cuda.device_count() =", torch.cuda.device_count())
 
 load_dotenv()
 
@@ -43,7 +41,9 @@ def main():
 
     # Load checkpoint, assuming it is stored in the "weights" directory
     ckpt = torch.load(
-        expandvars(config.ahus_model.weights_path), map_location=config.ahus_model.device, weights_only=False
+        expandvars(config.ahus_model.weights_path),
+        map_location=config.ahus_model.device,
+        weights_only=False,
     )
     ahus_model.load_state_dict(ckpt["model_state_dict"], strict=True)
     ahus_model.eval()
@@ -57,7 +57,10 @@ def main():
     )
 
     env = get_env(
-        ahus_model=ahus_model, ahus_model_device=config.ahus_model.device, env_device=config.env.device, dataset=dataset
+        ahus_model=ahus_model,
+        ahus_model_device=config.ahus_model.device,
+        env_device=config.env.device,
+        dataset=dataset,
     )
 
     # Just a test
