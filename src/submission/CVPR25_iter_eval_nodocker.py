@@ -191,7 +191,7 @@ parser.add_argument(
     required=True,
     help="Path to the model weights.",
 )
-parser.add_argument("--model_device", type=str, required=True, help="Which device to run the image model on.")
+parser.add_argument("--model_device", type=str, default="cuda", help="Which device to run the image model on.")
 parser.add_argument(
     "--segmenter_type",
     type=str,
@@ -208,10 +208,10 @@ parser.add_argument(
 parser.add_argument(
     "--segmenter_device",
     type=str,
-    required=True,  # Some segmenters do not require a checkpoint
+    default="cuda",
     help="Which device to run the segmenter on.",
 )
-parser.add_argument("--size_threshold", type=int, required=True, help="Size of the input image.")
+parser.add_argument("--size_threshold", type=int, default=128**3, help="Size of the input image.")
 
 
 args = parser.parse_args()
