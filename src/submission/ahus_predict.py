@@ -332,7 +332,9 @@ class InferencePipeline:
         spacing: np.ndarray = self._get_spacing(data)
 
         image5D_orig_shape: torch.Tensor = self._transform(data["imgs"]).to(self.model_device)  # shape (1, 1, D, H, W)
-        image5D, mask_logits, points, boxes = self.coord_handler.forward(image5D_orig_shape, spacing, mask_logits, points, boxes_orig_shape)
+        image5D, mask_logits, points, boxes = self.coord_handler.forward(
+            image5D_orig_shape, spacing, mask_logits, points, boxes_orig_shape
+        )
 
         # Temporary hack: boxes sometimes has values larger than the image size
         # Clip the boxes to the image size
@@ -384,7 +386,7 @@ class InferencePipeline:
         # Log predictions in original image space
         self.log_predictions_niigz(image5D_orig_shape, boxes_orig_shape, binarized_pred_orig_shape)
 
-        return binarized_pred_np_orig_shape
+        return binarized_pred_orig_shape
 
     def log_predictions_niigz(
         self, image5D: np.ndarray, boxes: torch.Tensor, binarized_pred: np.ndarray, save_dir: str = "work_dir/inference"
