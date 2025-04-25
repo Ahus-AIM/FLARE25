@@ -160,9 +160,9 @@ class OriginalSegmenter(Segmenter):
         ensure_all_present = True
         threshold = 0.5
 
-        all_instances_present = True
+        not_all_instances_present = True
         counter = 0
-        while all_instances_present and counter < max_iter:
+        while not_all_instances_present and counter < max_iter:
             pred_prob = torch.sigmoid(logits)
             pred_concat = torch.cat((torch.ones_like(logits)[0:1] * threshold, pred_prob), dim=0)
             pred_long = pred_concat.argmax(dim=0).squeeze(0)
@@ -178,7 +178,7 @@ class OriginalSegmenter(Segmenter):
 
             counter += 1
 
-            all_instances_present = len(torch.unique(pred_long)) != logits.shape[0] + 1
+            not_all_instances_present = len(torch.unique(pred_long)) != logits.shape[0] + 1
 
         # Is not unbounded
         return pred_long  # type: ignore
