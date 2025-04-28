@@ -14,7 +14,16 @@ import nibabel as nib
 import torch
 import torch.multiprocessing as mp
 from monai.losses import DiceCELoss
-from monai.transforms import CropForeground
+from monai.transforms import (
+    Compose,
+    CropForeground,
+    OneOf,
+    RandBiasField,
+    RandFlip,
+    RandGaussianSmooth,
+    RandHistogramShift,
+    Transform,
+)
 from torch.backends import cudnn
 from tqdm import tqdm
 
@@ -61,7 +70,7 @@ def save_class_stats(dataset_type, class_stats_dict, idx):
             CLASS_STATS_DICT[dataset_type][loss_type][class_name][1].append(idx)
 
 
-def ma(arr, k=100):
+def ma(arr, k=300):
     res = []
     curr = np.mean(arr[:k])
     for i in range(len(arr)):
@@ -172,21 +181,80 @@ def save_niigz(volume, save_path, overwrite=False):
     print(f"Saved volume to {save_path}")
 
 
+class RandPermuteAxes(Transform):
+    def __init__(self, prob=0.5):
+        self.prob = prob
+
+    def __call__(self, img):
+        if torch.rand(1).item() < self.prob:
+            spatial_dims = list(range(1, img.ndim))  # Exclude batch/channel dim
+            permuted_dims = torch.randperm(len(spatial_dims)).tolist()  # Get a random permutation
+            img = img.permute(0, *(spatial_dims[i] for i in permuted_dims))  # Reorder spatial axes
+        return img
+
+
+class RandInvertColors(Transform):
+    def __init__(self, prob=0.5):
+        self.prob = prob
+
+    def __call__(self, img):
+        if torch.rand(1).item() < self.prob:
+            img = 1.0 - img  # Invert colors
+        return img
+
+
+class ClampTransform(Transform):
+    def __init__(self, min_val=0.0, max_val=1.0):
+        self.min_val = min_val
+        self.max_val = max_val
+
+    def __call__(self, img):
+        return torch.clamp(img, self.min_val, self.max_val)
+
+
 def build_model(args):
     return model_registry[args.model_type]().to(args.device)
 
 
 def get_dataloaders_npz(args):
-    transform = CropForeground(select_fn=lambda x: x > 0, k_divisible=8, allow_smaller=True)
+    transform_prob = 0.5
+    rand_transforms = Compose(
+        [
+            OneOf(
+                [
+                    OneOf(
+                        [
+                            RandBiasField(prob=transform_prob),
+                            RandGaussianSmooth(prob=transform_prob),
+                            RandHistogramShift(prob=transform_prob),
+                        ]
+                    ),
+                    RandInvertColors(prob=0.0),
+                ]
+            ),
+            ClampTransform(min_val=0.0, max_val=1.0),
+        ]
+    )
+
+    threshold_value = 0
+    transform = Compose(
+        [
+            CropForeground(select_fn=lambda x: x > threshold_value, k_divisible=8, allow_smaller=True),
+            RandFlip(spatial_axis=0, prob=0.5),  # Random flip along axis 0
+            RandFlip(spatial_axis=1, prob=0.5),  # Random flip along axis 1
+            RandFlip(spatial_axis=2, prob=0.5),  # Random flip along axis 2
+            RandPermuteAxes(prob=1.0),
+        ]
+    )
 
     train_dataset = NPZDataset(
-        base_dir=args.base_dir,
+        base_dir=args.train_dir,
         transform=transform,
         size_threshold=args.size_threshold,
         data_suffix="npz",
+        data_transform=rand_transforms,
     )
-    train_sampler = sampler_class[args.data_sampling_method](train_dataset)
-    train_sampler = sampler_class[args.data_sampling_method](train_dataset)
+    train_sampler = sampler_class[args.data_sampling_method](train_dataset, epoch_size=1000)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -195,14 +263,13 @@ def get_dataloaders_npz(args):
     )
 
     val_dataset = NPZDataset(
-        base_dir=args.val_dir,
+        base_dir=args.val_img_dir,
         transform=transform,
         size_threshold=args.size_threshold,
-        load_n_first=1000,
         data_suffix="npz",
+        gt_dir=args.val_gt_dir,
     )
-    val_sampler = sampler_class[args.data_sampling_method](val_dataset)
-    val_sampler = sampler_class[args.data_sampling_method](val_dataset)
+    val_sampler = sampler_class[args.data_sampling_method](val_dataset, epoch_size=500)
     val_dataloader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=args.batch_size,
@@ -459,13 +526,12 @@ class BaseTrainer:
                 return_loss += self.seg_loss(mask_logits, mask_targets)
                 return mask_logits, loss, {}, class_losses_dict, nii_dict
 
-            mask_logits = decoder_forward(model, image_embeddings, mask_logits, (points_input, labels_input), boxes)
+            mask_logits = decoder_forward(
+                model, image_embeddings, mask_logits.detach(), (points_input, labels_input), boxes
+            )
             loss = self.seg_loss(mask_logits, mask_targets)
 
-            if num_click == self.args.num_clicks - 1:
-                return_loss += self.args.last_click_loss_weight * loss
-            else:
-                return_loss += loss
+            return_loss += loss
 
             losses_dict[f"click_{num_click+1}"] = loss.item()
 
@@ -484,7 +550,10 @@ class BaseTrainer:
         dice_list = []
         for i in range(true_masks.shape[0]):
             dice_list.append(compute_dice(pred_masks[i], true_masks[i]))
-        return (sum(dice_list) / len(dice_list)).item()
+        dice = sum(dice_list) / len(dice_list)
+        if hasattr(dice, "item"):
+            return dice.item()
+        return dice
 
     def train_epoch(self, epoch):
         epoch_loss = 0
@@ -515,71 +584,75 @@ class BaseTrainer:
                 )
             except Exception as e:
                 print(f"Error processing batch at step {step}: {e}")
-            image = image.to(device)
-            mask_targets = (mask_targets != 0).to(device).type(torch.long)
-            boxes = boxes.to(device)
-            with torch.amp.autocast("cuda"):
-                image_embeddings, xhat = model.segresnet(image)
+            try:
+                image = image.to(device)
+                mask_targets = (mask_targets != 0).to(device).type(torch.long)
+                boxes = boxes.to(device)
+                with torch.amp.autocast("cuda"):
+                    image_embeddings, xhat = model.segresnet(image)
 
-                self.click_points = []
-                self.click_labels = []
+                    self.click_points = []
+                    self.click_labels = []
 
-                mask_logits, loss, losses_dict, class_losses_dict, curr_nii_dict = self.interaction(
-                    model, image_embeddings, mask_targets, boxes, image, xhat, rel_file_path
-                )
-            nii_dict = nii_dict | curr_nii_dict
+                    mask_logits, loss, losses_dict, class_losses_dict, curr_nii_dict = self.interaction(
+                        model, image_embeddings, mask_targets, boxes, image, xhat, rel_file_path
+                    )
+                nii_dict = nii_dict | curr_nii_dict
 
-            epoch_loss += loss.item()
-            epoch_dice += self.get_dice_score(mask_logits, mask_targets)
-            cur_loss = loss.item()
+                epoch_loss += loss.item()
+                epoch_dice += self.get_dice_score(mask_logits, mask_targets)
+                cur_loss = loss.item()
 
-            loss /= self.args.accumulation_steps
+                loss /= self.args.accumulation_steps
 
-            if torch.isnan(loss):
-                print(f"NaN detected in loss at step {step}, skipping batch")
+                if torch.isnan(loss):
+                    print(f"NaN detected in loss at step {step}, skipping batch")
+                    continue
+
+                self.scaler.scale(loss).backward()
+                save_batch_stats(losses_dict)
+                save_class_stats("train", class_losses_dict, step + epoch * len(self.train_dataloader))
+
+                if step % self.args.accumulation_steps == 0 and step != 0:
+                    # clip grads at magnitude 1
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                    self.optimizer.zero_grad()
+
+                    print_loss = step_loss / self.args.accumulation_steps
+                    step_loss = 0
+                    print_dice = self.get_dice_score(mask_logits, mask_targets)
+                else:
+                    step_loss += cur_loss
+
+                if step % self.args.accumulation_steps == 0 and step != 0:
+                    if print_dice > self.step_best_dice:
+                        self.step_best_dice = print_dice
+                        if print_dice > 0.9:
+                            self.save_checkpoint(
+                                epoch,
+                                model.state_dict(),
+                                describe=f"{epoch}_step_dice:{print_dice}_best",
+                            )
+                    if print_loss < self.step_best_loss:
+                        self.step_best_loss = print_loss
+
+                if step % self.args.log_every_n_steps == 0 and not self.args.profile:
+                    plot_batch_stats()
+                    plot_class_stats()
+                    os.makedirs(f"{LOG_OUT_DIR}/niigz", exist_ok=True)
+                if step % (self.args.log_every_n_steps * 20) == 0 and not self.args.profile:
+                    save_niigz(mask_logits > 0.0, save_path=f"{LOG_OUT_DIR}/niigz/train_pred.nii.gz")
+                    save_niigz(torch.sigmoid(mask_logits), save_path=f"{LOG_OUT_DIR}/niigz/train_pred_probs.nii.gz")
+                    save_niigz(torch.sigmoid(xhat), save_path=f"{LOG_OUT_DIR}/niigz/train_reconstruction.nii.gz")
+                    save_niigz(mask_targets, save_path=f"{LOG_OUT_DIR}/niigz/train_gt.nii.gz")
+                    save_niigz(image, save_path=f"{LOG_OUT_DIR}/niigz/train_image.nii.gz")
+                    save_latest_niigz_files(nii_dict, f"{LOG_OUT_DIR}/niigz/train")
+            except Exception as e:
+                print(f"Error during training at step {step}: {e}")
                 continue
-
-            self.scaler.scale(loss).backward()
-            save_batch_stats(losses_dict)
-            save_class_stats("train", class_losses_dict, step + epoch * len(self.train_dataloader))
-
-            if step % self.args.accumulation_steps == 0 and step != 0:
-                # clip grads at magnitude 1
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-                self.optimizer.zero_grad()
-
-                print_loss = step_loss / self.args.accumulation_steps
-                step_loss = 0
-                print_dice = self.get_dice_score(mask_logits, mask_targets)
-            else:
-                step_loss += cur_loss
-
-            if step % self.args.accumulation_steps == 0 and step != 0:
-                if print_dice > self.step_best_dice:
-                    self.step_best_dice = print_dice
-                    if print_dice > 0.9:
-                        self.save_checkpoint(
-                            epoch,
-                            model.state_dict(),
-                            describe=f"{epoch}_step_dice:{print_dice}_best",
-                        )
-                if print_loss < self.step_best_loss:
-                    self.step_best_loss = print_loss
-
-            if step % self.args.log_every_n_steps == 0 and not self.args.profile:
-                plot_batch_stats()
-                plot_class_stats()
-                os.makedirs(f"{LOG_OUT_DIR}/niigz", exist_ok=True)
-            if step % (self.args.log_every_n_steps * 20) == 0 and not self.args.profile:
-                save_niigz(mask_logits > 0.0, save_path=f"{LOG_OUT_DIR}/niigz/train_pred.nii.gz")
-                save_niigz(torch.sigmoid(mask_logits), save_path=f"{LOG_OUT_DIR}/niigz/train_pred_probs.nii.gz")
-                save_niigz(torch.sigmoid(xhat), save_path=f"{LOG_OUT_DIR}/niigz/train_reconstruction.nii.gz")
-                save_niigz(mask_targets, save_path=f"{LOG_OUT_DIR}/niigz/train_gt.nii.gz")
-                save_niigz(image, save_path=f"{LOG_OUT_DIR}/niigz/train_image.nii.gz")
-                save_latest_niigz_files(nii_dict, f"{LOG_OUT_DIR}/niigz/train")
 
         epoch_loss /= step + 1
         epoch_dice /= step + 1
@@ -674,26 +747,30 @@ class BaseTrainer:
         for epoch in range(self.start_epoch, self.args.num_epochs):
             print(f"Epoch: {epoch}/{self.args.num_epochs - 1}")
 
-            epoch_loss, epoch_dice = self.train_epoch(epoch)
-            val_epoch_loss, val_epoch_dice = self.val_epoch(epoch)
+            try:
+                epoch_loss, epoch_dice = self.train_epoch(epoch)
+                val_epoch_loss, val_epoch_dice = self.val_epoch(epoch)
 
-            if self.lr_scheduler is not None:
-                self.lr_scheduler.step()
+                if self.lr_scheduler is not None:
+                    self.lr_scheduler.step()
 
-            self.losses.append(epoch_loss)
-            self.dices.append(epoch_dice)
-            self.val_losses.append(val_epoch_loss)
-            self.val_dices.append(val_epoch_dice)
-            print(f"EPOCH: {epoch}, Train Loss: {epoch_loss}, Val Loss: {val_epoch_loss}")
-            print(f"EPOCH: {epoch}, Train Dice: {epoch_dice}, Val Dice: {val_epoch_dice}")
-            logger.info(f"Epoch\t {epoch}\t : loss: {epoch_loss}, dice: {epoch_dice}")
+                self.losses.append(epoch_loss)
+                self.dices.append(epoch_dice)
+                self.val_losses.append(val_epoch_loss)
+                self.val_dices.append(val_epoch_dice)
+                print(f"EPOCH: {epoch}, Train Loss: {epoch_loss}, Val Loss: {val_epoch_loss}")
+                print(f"EPOCH: {epoch}, Train Dice: {epoch_dice}, Val Dice: {val_epoch_dice}")
+                logger.info(f"Epoch\t {epoch}\t : loss: {epoch_loss}, dice: {epoch_dice}")
 
-            state_dict = self.model.state_dict()
+                state_dict = self.model.state_dict()
 
-            # save latest checkpoint
-            self.save_checkpoint(epoch, state_dict, describe="latest")
-            self.plot_result(self.losses, self.val_losses, "Dice + Cross Entropy Loss", "Loss")
-            self.plot_result(self.dices, self.val_dices, "Dice", "Dice")
+                # save latest checkpoint
+                self.save_checkpoint(epoch, state_dict, describe="latest")
+                self.plot_result(self.losses, self.val_losses, "Dice + Cross Entropy Loss", "Loss")
+                self.plot_result(self.dices, self.val_dices, "Dice", "Dice")
+            except Exception as e:
+                print(f"Error during training/validation at epoch {epoch}: {e}")
+                continue
 
         logger.info("=====================================================================")
         logger.info(f"Best loss: {self.best_loss}")
@@ -708,7 +785,7 @@ class BaseTrainer:
 def init_seeds(seed=0, cuda_deterministic=False):
     random.seed(seed)
     np.random.seed(seed)
-    torch.manual_seed(seed)
+    torch.manual_s1eed(seed)
     # Speed-reproducibility tradeoff https://pytorch.org/docs/stable/notes/randomness.html
     if cuda_deterministic:  # slower, more reproducible
         cudnn.deterministic = True
@@ -757,12 +834,17 @@ if __name__ == "__main__":
     parser.add_argument("--work_dir", type=str, default="work_dir")
     parser.add_argument("--num_clicks", type=int, default=2)
     parser.add_argument("--last_click_loss_weight", type=int, default=1)
-    parser.add_argument("--base_dir", type=str, default="/data/drive_data/3D_train_npz_random_10percent_16G_original")
-    parser.add_argument("--val_dir", type=str, default="/data/3D_val_npz")
-    parser.add_argument("--log_every_n_steps", type=int, default=50)
+    parser.add_argument(
+        "--train_dir", type=str, default="../datasets/CVPR-BiomedSegFM/3D_train_npz_random_10percent_16G"
+    )
+    parser.add_argument("--val_img_dir", type=str, default="../datasets/CVPR-BiomedSegFM/3D_val_npz")
+    parser.add_argument(
+        "--val_gt_dir", type=str, default="../datasets/CVPR-BiomedSegFM/3D_val_gt/3D_val_gt_interactive"
+    )
+    parser.add_argument("--log_every_n_steps", type=int, default=250)
     parser.add_argument("--dry_run", action="store_true", default=False)
     parser.add_argument("--profile", action="store_true", default=False)
-    parser.add_argument("--size_threshold", type=int, default=128 * 128 * 128)
+    parser.add_argument("--size_threshold", type=int, default=256 * 128 * 128)
     parser.add_argument("--data_sampling_method", type=str, default="dataset")
 
     # train

@@ -8,7 +8,7 @@ from .modeling.position_encoder3D import LieRE, PositionEmbeddingRandom3D, Posit
 
 def build_ahus_model(position_encoder_class: PositionEncoder3D) -> AhusModel:
     init_filters = 16
-    blocks_down: tuple = (1, 1, 1, 1)  # should be 1, 2, 2, 4
+    blocks_down: tuple = (1, 1, 2, 4)
     blocks_up: tuple = (1, 1, 1, 1)
     embed_dim = 128
     num_heads = 4
@@ -30,6 +30,7 @@ def build_ahus_model(position_encoder_class: PositionEncoder3D) -> AhusModel:
         activation=nn.SiLU,
         init_filters=init_filters,
         blocks_up=blocks_up,
+        upsample_mode="deconv",
     )
     model = AhusModel(
         segresnet=segresnet,

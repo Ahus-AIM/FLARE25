@@ -41,8 +41,6 @@ def add_to_logits(logits: torch.Tensor, box_i: torch.Tensor, box_margin: int = 1
     box_i: (2, 3) tensor with the coordinates of the bounding box
     """
     box = box_i.clone().round().int()
-    box[0] = torch.clamp(box[0] - box_margin, 0, logits.shape[-1])
-    box[1] = torch.clamp(box[1] + box_margin, 0, logits.shape[-1])
     logits[box[0, 0] : box[1, 0], box[0, 1] : box[1, 1], box[0, 2] : box[1, 2]] += increment
     return logits
 
