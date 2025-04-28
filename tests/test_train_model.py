@@ -18,9 +18,9 @@ def test_train_ahus_model():
         "challenge",
         "--device",
         "cpu",
-        "--base_dir",
+        "--train_dir",
         "tests/test_data",
-        "--val_dir",
+        "--val_gt_dir",
         "tests/test_data",
         "--size_threshold",
         "32768",  # 16^3
