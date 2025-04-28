@@ -33,6 +33,20 @@ class Segmenter(Protocol):
         ...
 
 
+def add_to_logits(logits: torch.Tensor, box_i: torch.Tensor, box_margin: int = 1, increment=1.0) -> torch.Tensor:
+    """
+    Adds a value to the logits in the bounding box defined by box_i.
+
+    logits: (D, H, W)
+    box_i: (2, 3) tensor with the coordinates of the bounding box
+    """
+    box = box_i.clone().round().int()
+    box[0] = torch.clamp(box[0] - box_margin, 0, logits.shape[-1])
+    box[1] = torch.clamp(box[1] + box_margin, 0, logits.shape[-1])
+    logits[box[0, 0] : box[1, 0], box[0, 1] : box[1, 1], box[0, 2] : box[1, 2]] += increment
+    return logits
+
+
 def thresholded_argmax_segmentation(
     logits: Mask,
     image: Image,
@@ -120,24 +134,12 @@ class DDPGThresholdAgentSegmenter(Segmenter):
             # Add to logits for missing instances
             for i in range(logits.shape[0]):
                 if (i + 1) not in present_instances:
-                    logits[i] = self._add_to_logits(logits[i], bbox[i], increment=2**counter)
+                    add_to_logits(logits[i, 0], bbox[i], increment=2**counter)
 
             counter += 1
             all_instances_present = True
 
         return pred_long  # type: ignore
-
-    def _add_to_logits(
-        self, logits: torch.Tensor, box_i: torch.Tensor, box_margin: int = 1, increment: float = 1.0
-    ) -> torch.Tensor:
-        """
-        Adds a value to the logits in the bounding box defined by box_i.
-        """
-        box = box_i.clone().round().int()
-        box[0] = torch.clamp(box[0] - box_margin, 0, logits.shape[-1])
-        box[1] = torch.clamp(box[1] + box_margin, 0, logits.shape[-1])
-        logits[box[0, 0] : box[1, 0], box[0, 1] : box[1, 1], box[0, 2] : box[1, 2]] += increment
-        return logits
 
     @staticmethod
     def load(path: str, device: torch.device) -> "Segmenter":
@@ -160,9 +162,9 @@ class OriginalSegmenter(Segmenter):
         ensure_all_present = True
         threshold = 0.5
 
-        all_instances_present = True
+        not_all_instances_present = True
         counter = 0
-        while all_instances_present and counter < max_iter:
+        while not_all_instances_present and counter < max_iter:
             pred_prob = torch.sigmoid(logits)
             pred_concat = torch.cat((torch.ones_like(logits)[0:1] * threshold, pred_prob), dim=0)
             pred_long = pred_concat.argmax(dim=0).squeeze(0)
@@ -174,26 +176,14 @@ class OriginalSegmenter(Segmenter):
             present_instances = torch.unique(pred_long)
             for i in range(logits.shape[0]):  # for each instance
                 if (i + 1) not in present_instances:
-                    logits[i] = self._add_to_logits(logits[i], bbox[i], increment=2**counter)
+                    add_to_logits(logits[i, 0], bbox[i], increment=2**counter)
 
             counter += 1
 
-            all_instances_present = len(torch.unique(pred_long)) != logits.shape[0] + 1
+            not_all_instances_present = len(torch.unique(pred_long)) != logits.shape[0] + 1
 
         # Is not unbounded
         return pred_long  # type: ignore
-
-    def _add_to_logits(
-        self, logits: torch.Tensor, box_i: torch.Tensor, box_margin: int = 1, increment=1.0
-    ) -> torch.Tensor:
-        """
-        Adds a value to the logits in the bounding box defined by box_i.
-        """
-        box = box_i.clone().round().int()
-        box[0] = torch.clamp(box[0] - box_margin, 0, logits.shape[-1])
-        box[1] = torch.clamp(box[1] + box_margin, 0, logits.shape[-1])
-        logits[0, box[0, 0] : box[1, 0], box[0, 1] : box[1, 1], box[0, 2] : box[1, 2]] += increment
-        return logits
 
     @staticmethod
     def load(path: str, device: torch.device) -> "Segmenter":

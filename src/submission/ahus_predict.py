@@ -324,19 +324,22 @@ class InferencePipeline:
 
     def predict(self, data: Dict[str, Any]) -> np.ndarray:
         # Most of the data is not in tensor format, so it needs to be converted
-        boxes: torch.Tensor = self._get_initial_boxes(
+        boxes_orig_shape: torch.Tensor = self._get_initial_boxes(
             data
         )  # shape (I, 2, 3) where I is the number of instances in this image
         points: Optional[List[torch.Tensor]] = self._get_points(data)
         mask_logits: Optional[torch.Tensor] = self._get_mask_logits(data)
         spacing: np.ndarray = self._get_spacing(data)
 
-        image5D: torch.Tensor = self._transform(data["imgs"]).to(self.model_device)  # shape (1, 1, D, H, W)
-        image5D, mask_logits, points, boxes = self.coord_handler.forward(image5D, spacing, mask_logits, points, boxes)
+        image5D_orig_shape: torch.Tensor = self._transform(data["imgs"]).to(self.model_device)  # shape (1, 1, D, H, W)
+        image5D, mask_logits, points, boxes = self.coord_handler.forward(
+            image5D_orig_shape, spacing, mask_logits, points, boxes_orig_shape
+        )
 
         # Temporary hack: boxes sometimes has values larger than the image size
         # Clip the boxes to the image size
         # TODO: fix this properly
+        assert boxes is not None
         boxes[..., 0] = boxes[..., 0].clamp(0, image5D.shape[2] - 1)
         boxes[..., 1] = boxes[..., 1].clamp(0, image5D.shape[3] - 1)
         boxes[..., 2] = boxes[..., 2].clamp(0, image5D.shape[4] - 1)
@@ -368,7 +371,7 @@ class InferencePipeline:
             point_labels = points[1]
 
         with safe_autocast(device_type=self.segmenter_device.split(":")[0]):
-            binarized_pred: Integer[torch.Tensor, "image_depth image_height image_width"] = self.segmenter(
+            binarized_pred_orig_shape: Integer[torch.Tensor, "image_depth image_height image_width"] = self.segmenter(
                 logits=mask_logits_orig_shape.to(self.segmenter.device),  # TODO: why is this device call necessary?
                 image=image5D.to(self.segmenter.device),
                 bbox=boxes.to(self.segmenter.device),
@@ -376,20 +379,24 @@ class InferencePipeline:
                 point_labels=point_labels.to(self.segmenter.device) if point_labels is not None else None,
             )
 
-        # Log function expects numpy arrays for image and segmentations
-        binarized_pred_np = binarized_pred.cpu().numpy()
-        image5D_np = image5D.cpu().numpy()
+        # Log function expects numpy arrays without batch/channel dimension for image and segmentations
+        binarized_pred_orig_shape = binarized_pred_orig_shape.cpu().numpy()
+        image5D_orig_shape = image5D_orig_shape[0, 0].cpu().numpy()
 
-        # Log predictions
-        self.log_predictions_niigz(image5D_np, boxes, binarized_pred_np)
+        # Log predictions in original image space
+        self.log_predictions_niigz(image5D_orig_shape, boxes_orig_shape, binarized_pred_orig_shape)
 
-        return binarized_pred_np
+        return binarized_pred_orig_shape
 
     def log_predictions_niigz(
         self, image5D: np.ndarray, boxes: torch.Tensor, binarized_pred: np.ndarray, save_dir: str = "work_dir/inference"
     ) -> None:
         """
         Logs images, bboxes and binarized segmentations to NIfTI files.
+
+        image5D: np.ndarray[shape=(D, H, W)]
+        boxes: torch.Tensor[shape=(I, 2, 3)]
+        binarized_pred: np.ndarray[shape=(D, H, W)]
         """
         os.makedirs(save_dir, exist_ok=True)
 
@@ -400,10 +407,7 @@ class InferencePipeline:
         lab: nib.Nifti1Image = nib.Nifti1Image(binarized_pred.astype(np.float32), np.eye(4))
         nib.save(lab, pred_path)
 
-        # Remove batch and channel dimensions
-        img: np.ndarray = image5D[0, 0]
-
-        img_nii: nib.Nifti1Image = nib.Nifti1Image(img.astype(np.float32), np.eye(4))
+        img_nii: nib.Nifti1Image = nib.Nifti1Image(image5D.astype(np.float32), np.eye(4))
         nib.save(img_nii, img_path)
 
         box_volume = np.zeros_like(binarized_pred)
