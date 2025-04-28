@@ -206,7 +206,7 @@ for docker in dockers:
     if os.path.exists(team_outpath):
         shutil.rmtree(team_outpath)
     os.makedirs(team_outpath)
-    os.system("chmod -R 777 ./* >/dev/null 2>&1")  # ignore output warnings/errors of this command with >/dev/null 2>&1
+    # os.system("chmod -R 777 ./* >/dev/null 2>&1")  # ignore output warnings/errors of this command with >/dev/null 2>&1
 
     # Evaluation Metrics
     metric = OrderedDict()
