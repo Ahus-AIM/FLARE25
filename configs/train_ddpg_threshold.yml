@@ -4,7 +4,7 @@ wandb:
 ahus_model:
   device: "cuda"
   type: "ahus_model_rope_mixed"
-  weights_path: "$WEIGHTS_DIR/rope_mixed/latest.pth"
+  weights_path: "work_dir/rope_mixed_120_accum/model_latest.pth"
 env:
   device: "cpu"
 total_frames: 10
@@ -12,8 +12,9 @@ eval_every_n_batches: 100
 eval_max_steps: 10
 dataset:
   # size_threshold: 16777216 # 256^3
-  size_threshold: 2097152 # 128^3
-  base_dir: "$DATA_DIR/3D_val_combined_small"
+  # size_threshold: 2097152 # 128^3
+  size_threshold: 4194304 # 256*128*128
+  base_dir: "/data/CVPR-BiomedSegFM/3D_val_combined_small"
 agent:
   type: "DDPG"
   device: "cuda"
@@ -23,4 +24,4 @@ agent:
     replay_buffer_size: 100
     num_optim: 10
     max_grad_norm: 100
-  save_path: "$WEIGHTS_DIR/rl/ddpg_threshold_trained.pth"
+  save_path: "work_dir/ddpg_threshold/model_latest.pth"

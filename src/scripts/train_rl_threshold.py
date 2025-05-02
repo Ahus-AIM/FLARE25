@@ -1,17 +1,18 @@
 import argparse
+from pathlib import Path
 import os
 from os.path import expandvars
 
 import torch
 import wandb
 import yaml
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 from monai.transforms.croppad.array import CropForeground
 from torchrl.collectors import SyncDataCollector
 from torchrl.envs import ExplorationType, set_exploration_type
 from tqdm import tqdm
 
-from src.dataset.npz_dataset import NPZDatasetWithLongLabels
+from src.dataset.npz_dataset import NPZDataset
 from src.model.build_ahus_model import model_registry
 from src.rl.agents import THRESHOLD_AGENT_REGISTRY, ThresholdAgent
 from src.rl.mdp_env import get_env
@@ -21,7 +22,7 @@ print("CUDA_VISIBLE_DEVICES =", os.environ.get("CUDA_VISIBLE_DEVICES"))
 print("torch.cuda.is_available() =", torch.cuda.is_available())
 print("torch.cuda.device_count() =", torch.cuda.device_count())
 
-load_dotenv()
+# load_dotenv()
 
 
 def main():
@@ -41,7 +42,7 @@ def main():
 
     # Load checkpoint, assuming it is stored in the "weights" directory
     ckpt = torch.load(
-        expandvars(config.ahus_model.weights_path),
+        config.ahus_model.weights_path,
         map_location=config.ahus_model.device,
         weights_only=False,
     )
@@ -49,11 +50,12 @@ def main():
     ahus_model.eval()
     ahus_model.requires_grad_(False)
 
-    dataset = NPZDatasetWithLongLabels(
-        base_dir=expandvars(config.dataset.base_dir),
+    dataset = NPZDataset(
+        base_dir=config.dataset.base_dir,
         size_threshold=config.dataset.size_threshold,
         transform=CropForeground(select_fn=lambda x: x > 0, k_divisible=8, allow_smaller=True),
         data_suffix="npz",
+        label_dtype=torch.long,
     )
 
     env = get_env(
@@ -133,8 +135,9 @@ def main():
         print("Training interrupted.")
 
     # Save model
-    print(f"Saving model to {expandvars(config.agent.save_path)}...", end="")
-    agent.save(expandvars(config.agent.save_path))
+    print(f"Saving model to {config.agent.save_path}...", end="")
+    Path(config.agent.save_path).parent.mkdir(parents=True, exist_ok=True)
+    agent.save(Path(config.agent.save_path))
     print("done.")
     wandb.finish()
 

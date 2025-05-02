@@ -1,6 +1,7 @@
 from typing import Protocol
 
 import torch
+from pathlib import Path
 from tensordict import TensorDictBase
 from tensordict.nn import TensorDictModule
 from torch import Tensor, nn
@@ -24,14 +25,14 @@ class ThresholdAgent(Protocol):
         """
         ...
 
-    def save(self, path: str) -> None:
+    def save(self, path: Path) -> None:
         """
         Save everything necessary to recreate the agent, including the model weights and hyperparameters.
         """
         ...
 
     @staticmethod
-    def load(path: str, device: torch.device) -> "ThresholdAgent":
+    def load(path: Path, device: torch.device) -> "ThresholdAgent":
         """
         Recreate the agent from a saved file.
         """
@@ -318,7 +319,7 @@ class DDPGThresholdAgent(ThresholdAgent):
 
         return float(losses.mean().item()), float(grad_norms.mean().item())
 
-    def save(self, path: str) -> None:
+    def save(self, path: Path) -> None:
         """
         Save the model weights and hyperparameters to a single file.
 
@@ -343,7 +344,7 @@ class DDPGThresholdAgent(ThresholdAgent):
         torch.save(checkpoint, path)
 
     @staticmethod
-    def load(path: str, device: torch.device) -> "DDPGThresholdAgent":
+    def load(path: Path, device: torch.device) -> "DDPGThresholdAgent":
         """
         Load the policy model weights and hyperparameters from a single file.
 
