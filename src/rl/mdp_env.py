@@ -29,6 +29,7 @@ from src.custom_types import (
     PointLabel,
     PointLabels,
     PostProcessingFn,
+    PromptEmbeddings,
     Reward,
     RewardFn,
     Segmentation,
@@ -112,6 +113,11 @@ class InteractiveSegmentationEnv(EnvBase):
                 dtype=torch.float32,
                 domain="continuous",
             ),
+            prompt_embeddings=Unbounded(
+                shape=self.batch_size + (-1, -1),
+                dtype=torch.float32,
+                domain="continuous",
+            ),
             # bbox is actually bounded, but we don't know the image size beforehand
             bbox=Unbounded(
                 shape=self.batch_size + BBOX_SHAPE,
@@ -187,6 +193,20 @@ class InteractiveSegmentationEnv(EnvBase):
 
         image_embeddings = self.image_embedder_fn(image)
 
+        # Produce initial mask and prompt embeddings
+        low_res_mask, prompt_embeddings = self.mask_fn(
+            [
+                image_embeddings[0],
+                image_embeddings[1],
+                image_embeddings[2],
+                image_embeddings[3],
+            ],
+            bbox,
+            None,
+            None,
+            None,
+        )
+
         td = TensorDict(
             {
                 "image": image,
@@ -194,12 +214,9 @@ class InteractiveSegmentationEnv(EnvBase):
                 "image_embedding2": image_embeddings[1],
                 "image_embedding3": image_embeddings[2],
                 "image_embedding4": image_embeddings[3],
+                "prompt_embeddings": prompt_embeddings,
                 "bbox": bbox,
-                "mask": torch.zeros_like(
-                    image,
-                    dtype=torch.float32,
-                    device=tensordict.device,
-                ),
+                "mask": low_res_mask,
                 "point_coords": torch.zeros(
                     tensordict.batch_size + (self.n_steps,) + POINT_COORD_SHAPE,
                     dtype=torch.float32,
@@ -230,7 +247,7 @@ class InteractiveSegmentationEnv(EnvBase):
     def _step(self, tensordict: TensorDictBase):
         # Only the first "steps" points and labels have meaningful values
         step: int = tensordict["step"][0]
-        new_low_res_mask = self.mask_fn(
+        new_low_res_mask, new_prompt_embeddings = self.mask_fn(
             [
                 tensordict["image_embedding1"],
                 tensordict["image_embedding2"],
@@ -265,6 +282,7 @@ class InteractiveSegmentationEnv(EnvBase):
                 "image_embedding2": tensordict["image_embedding2"],
                 "image_embedding3": tensordict["image_embedding3"],
                 "image_embedding4": tensordict["image_embedding4"],
+                "prompt_embeddings": new_prompt_embeddings,
                 "bbox": tensordict["bbox"],
                 "mask": new_low_res_mask,
                 "point_coords": new_point_coords,
@@ -294,21 +312,31 @@ def get_image_embedder_fn(
 def get_mask_fn(ahus_model: AhusModel, ahus_model_device: torch.device, env_device: torch.device) -> MaskFn:
     def mask_fn(
         image_embeddings: List[ImageEmbedding],
-        bbox: BBox,
-        point_coords: PointCoords,
-        point_labels: PointLabels,
-        mask: Mask,
-    ) -> Mask:
+        bbox: BBox|None,
+        point_coords: PointCoords|None,
+        point_labels: PointLabels|None,
+        mask: Mask|None,
+    ) -> Tuple[Mask, PromptEmbeddings]:
         # TODO: this looks bad
         image_embeddings = image_embeddings[::-1]
         image_embeddings = [emb.to(ahus_model_device) for emb in image_embeddings]
-        return decoder_forward(
+
+        # Assume that if either point_coords or point_labels is None, then both are None
+        if point_coords is None or point_labels is not None:
+            points = None
+        else:
+            points = (point_coords.to(ahus_model_device), point_labels.to(ahus_model_device))
+
+        mask_logits, prompt_embeddings = decoder_forward(
             ahus_model,
             image_embeddings,
-            mask.to(ahus_model_device),
-            (point_coords.to(ahus_model_device), point_labels.to(ahus_model_device)),
-            bbox.to(ahus_model_device),
-        ).to(env_device)
+            mask.to(ahus_model_device) if mask is not None else None,
+            points,
+            bbox.to(ahus_model_device) if bbox is not None else None,
+        )
+        mask_logits: Mask = mask_logits.to(env_device)
+        prompt_embeddings: PromptEmbeddings = prompt_embeddings.to(env_device)
+        return mask_logits, prompt_embeddings
 
     return mask_fn
 

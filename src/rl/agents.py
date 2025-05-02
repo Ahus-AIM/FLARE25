@@ -1,7 +1,9 @@
 from typing import Protocol, Type
+import torch.nn.functional as F
 
 from rich.prompt import Prompt
 
+from src.custom_types import PromptEmbeddings, Threshold
 from src.rl.models import PromptAttentionNet
 from src.model.modeling.common import normalize
 from src.model.modeling.normalized_mask_decoder3D import (
@@ -14,7 +16,7 @@ from pathlib import Path
 from tensordict import TensorDictBase
 from tensordict.nn import TensorDictModule
 from torch import Tensor, nn
-from torchrl.data import Bounded, ListStorage, TensorDictReplayBuffer
+from torchrl.data import Bounded, ListStorage, PrioritizedSampler, TensorDictReplayBuffer
 from torchrl.modules import NormalParamExtractor, ProbabilisticActor, TanhNormal, ValueOperator
 from torchrl.objectives import ClipPPOLoss, DDPGLoss, SoftUpdate
 
@@ -391,7 +393,7 @@ class DDPGThresholdAgent(ThresholdAgent):
         return info
 
 class AttentionThresholdValueNet(nn.Module):
-    def __init__(self, backbone: nn.Module, backbone_out_size: int):
+    def __init__(self, backbone: PromptAttentionNet, backbone_out_size: int):
         super().__init__()
         self.backbone = backbone
         assert backbone_out_size // 2 >= 2, "Backbone output size must be at least 4"
@@ -402,12 +404,54 @@ class AttentionThresholdValueNet(nn.Module):
             nn.Linear(backbone_out_size // 2, 1),
         )
 
-    def forward(self, mask: Tensor, threshold: Tensor) -> Tensor:
-        # Pass mask through the backbone
-        x = self.backbone(mask)  # (N, backbone_out_size)
+    def forward(self, prompt_embeddings: PromptEmbeddings, threshold: Threshold) -> Tensor:
+        # Pass prompt embeddings through the backbone
+        x = self.backbone(prompt_embeddings)  # (N, backbone_out_size)
         # Concatenate the threshold to the output of the backbone
         x = torch.cat((x, threshold), dim=1)  # (N, backbone_out_size + 1)
         return self.head(x)
+
+class AttentionThresholdPolicyNet(nn.Module):
+    def __init__(self, backbone: PromptAttentionNet, backbone_out_size: int):
+        super().__init__()
+        self.backbone = backbone
+        assert backbone_out_size // 2 >= 2, "Backbone output size must be at least 4"
+        self.backbone_out_size = backbone_out_size
+        self.head = nn.Sequential(
+            nn.Linear(backbone_out_size, backbone_out_size // 2),
+            nn.ReLU(),
+            nn.Linear(backbone_out_size // 2, 1),
+        )
+
+    def forward(self, prompt_embeddings: PromptEmbeddings, threshold: Threshold) -> Tensor:
+        # Pass prompt embeddings through the backbone
+        x = self.backbone(prompt_embeddings)  # (N, backbone_out_size)
+        # Concatenate the threshold to the output of the backbone
+        x = torch.cat((x, threshold), dim=1)  # (N, backbone_out_size + 1)
+        return self.head(x)
+
+class DummyBackbone(nn.Module):
+    def __init__(self, input_size: int, output_size: int):
+        super().__init__()
+        self.input_size = input_size
+        self.output_size = output_size
+
+        self.net1 = nn.Sequential(
+            # input is (batch_size, n_points, prompt_embedding_dim)
+            nn.Linear(self.input_size, self.input_size // 2),
+            nn.ReLU(),
+            nn.Linear(self.input_size // 2, self.input_size // 4),
+            nn.ReLU(),
+            nn.Linear(self.input_size // 4, self.output_size), # (batch_size, n_points, output_size)
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.net1(x) # (batch_size, n_points, output_size)
+        x = x.permute(0, 2, 1) # (batch_size, output_size, n_points)
+        x = F.avg_pool1d(x, kernel_size=x.shape[-1]) # (batch_size, output_size, 1)
+        x = x.squeeze(-1) # (batch_size, output_size)
+        return x
+
 
 class AttentionThresholdAgent(ThresholdAgent):
     def __init__(
@@ -419,6 +463,11 @@ class AttentionThresholdAgent(ThresholdAgent):
         num_optim: int,
         prompt_embedding_dim: int, # Dimensionality of prompt embeddings as produced by the image model
         max_grad_norm=1.0,
+        rb_alpha: float = 0.6,
+        rb_beta: float = 0.4,
+        # limits for the threshold
+        lowest_threshold: float = 0.0,
+        highest_threshold: float = 1.0,
     ):
         self.device = device
         self.lr = lr
@@ -427,12 +476,19 @@ class AttentionThresholdAgent(ThresholdAgent):
         self.num_optim = num_optim
         self.prompt_embedding_dim = prompt_embedding_dim
         self.max_grad_norm = max_grad_norm
+        self.rb_alpha = rb_alpha
+        self.rb_beta = rb_beta
         self.backbone_out_size = 64
 
-        self.backbone = PromptAttentionNet(
-            num_layers=2,
-            emb_dim=self.prompt_embedding_dim,
-            num_heads=4,
+        # self.backbone = PromptAttentionNet(
+        #     num_layers=2,
+        #     emb_dim=self.prompt_embedding_dim,
+        #     num_heads=4,
+        #     output_size=self.backbone_out_size,
+        # ).to(self.device)
+
+        self.backbone = DummyBackbone(
+            input_size=self.prompt_embedding_dim,
             output_size=self.backbone_out_size,
         ).to(self.device)
 
@@ -440,12 +496,12 @@ class AttentionThresholdAgent(ThresholdAgent):
         self.actor_net = nn.Sequential(
             self.backbone,
             nn.Linear(self.backbone_out_size, self.backbone_out_size // 2),
-            nn.ReLU(),
+            nn.Tanh(),
             nn.Linear(self.backbone_out_size // 2, 1),
             nn.Sigmoid(),
         ).to(self.device)
 
-        self.policy_module = TensorDictModule(self.actor_net, in_keys=["mask"], out_keys=["threshold"])
+        self.policy_module = TensorDictModule(self.actor_net, in_keys=["prompt_embeddings"], out_keys=["threshold"])
 
         self.value_net = AttentionThresholdValueNet(
             backbone=self.backbone,
@@ -453,7 +509,7 @@ class AttentionThresholdAgent(ThresholdAgent):
         ).to(self.device)
 
         self.value_module = TensorDictModule(
-            module=self.value_net, in_keys=["mask", "threshold"], out_keys=["state_action_value"]
+            module=self.value_net, in_keys=["prompt_embeddings", "threshold"], out_keys=["state_action_value"]
         )
 
         self.loss_module = DDPGLoss(
@@ -468,9 +524,13 @@ class AttentionThresholdAgent(ThresholdAgent):
             for module in self.backbone.modules():
                 if hasattr(module, "normalize_weights"):
                     module.normalize_weights()
+        self.optim.register_step_post_hook(optim_normalize_hook)
 
         # Every sample added to the replay buffer (images etc.) can have different shapes, so use a normal list
-        self.replay_buffer = TensorDictReplayBuffer(storage=ListStorage(self.replay_buffer_size))
+        self.replay_buffer = TensorDictReplayBuffer(
+            storage=ListStorage(self.replay_buffer_size),
+            sampler=PrioritizedSampler(max_capacity=self.replay_buffer_size, alpha=self.rb_alpha, beta=self.rb_beta),
+        )
 
     def policy(self, td: TensorDictBase) -> TensorDictBase:
         return self.policy_module(td.to(self.device))
@@ -501,6 +561,9 @@ class AttentionThresholdAgent(ThresholdAgent):
 
         # Update the policy and value networks
         self.optim.step()
+
+        # Update the priorities in the replay buffer
+        self.replay_buffer.update_tensordict_priority(td)
 
         return loss.item(), grad_norm.item()
 

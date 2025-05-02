@@ -1,28 +1,30 @@
 wandb:
   entity: "valterschutz-chalmers-university-of-technology"
-  project: "medseg-train-ddpg-threshold"
+  project: "medseg-train-attention-threshold"
 ahus_model:
   device: "cuda"
   type: "ahus_model_rope_mixed"
   weights_path: "work_dir/rope_mixed_120_accum/model_latest.pth"
 env:
   device: "cpu"
-total_frames: 10
+total_frames: 1000
 eval_every_n_batches: 100
 eval_max_steps: 10
 dataset:
   # size_threshold: 16777216 # 256^3
   # size_threshold: 2097152 # 128^3
   size_threshold: 4194304 # 256*128*128
-  base_dir: "/data/CVPR-BiomedSegFM/3D_val_combined_small"
+  base_dir: "/data/CVPR-BiomedSegFM/3D_val_combined_single"
 agent:
   type: "attention"
   device: "cuda"
   kwargs:
-    lr: 0.001
-    update_tau: 0.005
+    lr: 0.00001
+    update_tau: 0.001
     replay_buffer_size: 100
     num_optim: 10
     max_grad_norm: 100
-    prompt_embedding_dim: 64 # TODO
+    rb_alpha: 0.6
+    rb_beta: 0.4
+    prompt_embedding_dim: 128
   save_path: "work_dir/attention_threshold/model_latest.pth"

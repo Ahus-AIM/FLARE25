@@ -41,7 +41,7 @@ class PromptAttentionNet(nn.Module):
         self.num_heads = num_heads
         self.output_size = output_size
 
-        self.threshold_embedding = nn.Parameter(torch.randn(1, 1, emb_dim))
+        self.threshold_embedding = nn.Parameter(torch.randn(self.emb_dim))
         self.threshold_embedding.data = normalize(self.threshold_embedding.data, dim=-1)
 
         self.attn_over_prompts = nn.ModuleList()
@@ -67,7 +67,8 @@ class PromptAttentionNet(nn.Module):
             x: (B, output_size) where B is the batch size.
         """
         B, N, emb_dim = x.shape
-        x = torch.cat([x, self.threshold_embedding.expand(B, 1, emb_dim)], dim=1) # (B, N+1, emb_dim)
+        expanded_threshold_embedding = self.threshold_embedding[None, None, :].expand(B, -1, -1)
+        x = torch.cat([x, expanded_threshold_embedding], dim=1) # (B, N+1, emb_dim)
 
         for layer in self.attn_over_prompts:
             x = layer(x)
@@ -86,6 +87,4 @@ class PromptAttentionNet(nn.Module):
         return x
 
     def normalize_weights(self):
-        # TODO: remove after debugging
-        print("NORMALIZING WEIGHTS")
         self.threshold_embedding.data = normalize(self.threshold_embedding.data, dim=-1)

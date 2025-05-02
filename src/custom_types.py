@@ -24,6 +24,7 @@ Mask = Float[Tensor, "batch image_channel image_depth image_height image_width"]
 Segmentation = Integer[Tensor, "batch image_channel image_depth image_height image_width"]
 # Image embeddings can have varied number of channels and spatial dimensions
 ImageEmbedding = Float[Tensor, "batch _embedding_channel _embedding_depth _embedding_height _embedding_width"]
+PromptEmbeddings = Float[Tensor, "batch n_points prompt_embedding_size"]
 
 BBox = Float[Tensor, f"batch {size_to_str(BBOX_SHAPE)}"]
 PointCoord = Float[Tensor, f"batch {size_to_str(POINT_COORD_SHAPE)}"]
@@ -38,9 +39,13 @@ Reward = Float[Tensor, f"batch {size_to_str(REWARD_SHAPE)}"]
 # An image embedder function returns a list of image embeddings, due to the unet nature of the model
 ImageEmbedderFn = Callable[[Image], List[ImageEmbedding]]
 
+# A mask function is responsible for
+# 1. Producing a mask of logits.
+# 2. Producing new prompt embeddings.
+# All inputs except the image embeddings are optional, since image segmentation should be possible without labels.
 MaskFn = Callable[
-    [List[ImageEmbedding], BBox, PointCoords, PointLabels, Mask],  # previous mask
-    Mask,  # new mask
+    [List[ImageEmbedding], BBox|None, PointCoords|None, PointLabels|None, Mask|None],  # previous mask
+    Tuple[Mask, PromptEmbeddings],  # new mask
 ]
 
 PostProcessingFn = Callable[

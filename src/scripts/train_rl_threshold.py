@@ -3,13 +3,14 @@ from pathlib import Path
 import os
 from os.path import expandvars
 
+from dotenv import load_dotenv
 import torch
 import wandb
 import yaml
 # from dotenv import load_dotenv
 from monai.transforms.croppad.array import CropForeground
 from torchrl.collectors import SyncDataCollector
-from torchrl.envs import ExplorationType, set_exploration_type
+from torchrl.envs import ExcludeTransform, ExplorationType, check_env_specs, set_exploration_type
 from tqdm import tqdm
 
 from src.dataset.npz_dataset import NPZDataset
@@ -22,7 +23,8 @@ print("CUDA_VISIBLE_DEVICES =", os.environ.get("CUDA_VISIBLE_DEVICES"))
 print("torch.cuda.is_available() =", torch.cuda.is_available())
 print("torch.cuda.device_count() =", torch.cuda.device_count())
 
-# load_dotenv()
+
+load_dotenv()
 
 
 def main():
@@ -64,11 +66,8 @@ def main():
         env_device=config.env.device,
         dataset=dataset,
     )
+    check_env_specs(env)
 
-    # Just a test
-    td = env.reset()
-    td = env.rand_step(td)
-    td = env.rollout(100)
 
     # Static type is ThresholdAgent, dynamic type is chosen by config
     agent_cls = THRESHOLD_AGENT_REGISTRY[config.agent.type]
@@ -77,6 +76,35 @@ def main():
         **config_dict["agent"]["kwargs"],
     )
 
+    # Debug manually
+    td = env.reset()
+    td = agent.policy(td)
+    td = env.step(td)
+
+    keys_to_exclude = [
+        "bbox",
+        "collector",
+        "image",
+        "image_embedding1",
+        "image_embedding2",
+        "image_embedding3",
+        "image_embedding4",
+        "mask",
+        "point_coords",
+        "point_labels",
+        "true_segmentation",
+        # next
+        ("next", "bbox"),
+        ("next","image"),
+        ("next","image_embedding1"),
+        ("next","image_embedding2"),
+        ("next","image_embedding3"),
+        ("next","image_embedding4"),
+        ("next","mask"),
+        ("next","point_coords"),
+        ("next","point_labels"),
+        ("next","true_segmentation"),
+    ]
     collector = SyncDataCollector(
         env,
         agent.policy,
@@ -86,6 +114,7 @@ def main():
         env_device=config.env.device,
         policy_device=config.agent.device,
         trust_policy=True,
+        postproc=ExcludeTransform(*keys_to_exclude),
     )
 
     wandb.init(
