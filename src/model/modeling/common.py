@@ -7,6 +7,9 @@ from monai.networks.layers.utils import get_act_layer, get_norm_layer
 
 
 def normalize(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
+    """
+    Normalizes the 2-norm of the input tensor along the specified dimension.
+    """
     return x / x.norm(2, dim=dim, keepdim=True).clamp(min=1e-6)
 
 
