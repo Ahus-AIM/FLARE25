@@ -124,7 +124,7 @@ class NormalizedTwoWayTransformer3D(nn.Module):
                 image_pe_factor=image_pe_factor,
             )
 
-        return image_embedding
+        return image_embedding, point_embedding
 
 
 class TwoWayAttentionBlock3D(nn.Module):
@@ -399,7 +399,7 @@ class NormalizedMaskDecoder3D(nn.Module):
         b, c, x, y, z = image_embeddings.shape
         image_embeddings = image_embeddings + dense_prompt_embeddings
 
-        image_embeddings = self.transformer(
+        image_embeddings, encoded_prompts = self.transformer(
             image_embeddings,
             image_pe_term,
             image_pe_factor,
@@ -412,4 +412,4 @@ class NormalizedMaskDecoder3D(nn.Module):
         image_embeddings = image_embeddings.transpose(1, 2).view(b, c, x, y, z) * self.embed_dim**0.5
         mask_logits = self.output_upscaling(image_embeddings, step_wise_image_embeddings[1:])
 
-        return mask_logits
+        return mask_logits, encoded_prompts

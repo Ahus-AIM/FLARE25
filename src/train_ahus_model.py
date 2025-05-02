@@ -511,7 +511,7 @@ class BaseTrainer:
 
         losses_dict["rec"] = return_loss.item()
 
-        mask_logits = decoder_forward(model, image_embeddings, mask_logits=None, points=None, boxes=boxes)
+        mask_logits, _ = decoder_forward(model, image_embeddings, mask_logits=None, points=None, boxes=boxes)
 
         loss, class_losses_dict, nii_dict = self.store_class_losses_and_nii(
             image, mask_logits, mask_targets, xhat, rec_loss, rel_file_path, split_filename_to_dirs
@@ -526,7 +526,7 @@ class BaseTrainer:
                 return_loss += self.seg_loss(mask_logits, mask_targets)
                 return mask_logits, loss, {}, class_losses_dict, nii_dict
 
-            mask_logits = decoder_forward(
+            mask_logits, _ = decoder_forward(
                 model, image_embeddings, mask_logits.detach(), (points_input, labels_input), boxes
             )
             loss = self.seg_loss(mask_logits, mask_targets)

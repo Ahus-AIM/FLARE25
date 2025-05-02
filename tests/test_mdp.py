@@ -53,7 +53,7 @@ def get_mask_fn(ahus_model: AhusModel) -> MaskFn:
     ) -> Mask:
         # TODO: this looks bad
         image_embeddings = image_embeddings[::-1]
-        return decoder_forward(ahus_model, image_embeddings, mask, (points, point_labels), bbox)
+        return decoder_forward(ahus_model, image_embeddings, mask, (points, point_labels), bbox)[0]
 
     return mask_fn
 
