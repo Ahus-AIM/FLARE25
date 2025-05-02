@@ -119,7 +119,7 @@ import subprocess
 
 from tqdm import tqdm
 
-from src.submission.ahus_predict import segmenter_registry
+from src.submission.segmentation import segmenter_registry
 
 join = os.path.join
 import argparse
@@ -168,12 +168,20 @@ def compute_multi_class_nsd(
 parser = argparse.ArgumentParser(
     "Segmentation iterative refinement with clicks eavluation for docker containers", add_help=False
 )
-parser.add_argument("-i", "--test_img_path", required=True, type=str, help="testing data path")
+parser.add_argument(
+    "-i",
+    "--test_img_path",
+    required=False,
+    type=str,
+    default="../datasets/CVPR-BiomedSegFM/3D_val_npz",
+    help="testing data path",
+)
 parser.add_argument("-o", "--save_path", default="./demo_seg", type=str, help="segmentation output path")
 parser.add_argument(
     "-val_gts",
     "--validation_gts_path",
-    required=True,
+    default="../datasets/CVPR-BiomedSegFM/3D_val_gt/3D_val_gt_interactive",
+    required=False,
     type=str,
     help="path to validation set (or final test set) GT files",
 )
@@ -184,18 +192,22 @@ parser.add_argument(
     action="store_true",
     help="Verbose output, e.g., print coordinates of generated clicks",
 )
-parser.add_argument("--model_type", type=str, required=True, help="Model type to use for prediction.")
+parser.add_argument(
+    "--model_type", type=str, required=False, help="Model type to use for prediction.", default="ahus_model_rope_mixed"
+)
 parser.add_argument(
     "--model_checkpoint",
+    default="work_dir/rope_mixed_120_accum/model_latest.pth",
     type=str,
-    required=True,
+    required=False,
     help="Path to the model weights.",
 )
 parser.add_argument("--model_device", type=str, default="cuda", help="Which device to run the image model on.")
 parser.add_argument(
     "--segmenter_type",
+    default="original",
     type=str,
-    required=True,
+    required=False,
     help="Segmenter type to use for binarizing.",
     choices=list(segmenter_registry.keys()),
 )
@@ -211,7 +223,7 @@ parser.add_argument(
     default="cuda",
     help="Which device to run the segmenter on.",
 )
-parser.add_argument("--size_threshold", type=int, default=128**3, help="Size of the input image.")
+parser.add_argument("--size_threshold", type=int, default=32**3, help="Size of the input image.")
 
 
 args = parser.parse_args()
@@ -253,7 +265,7 @@ team_outpath = join(save_path, teamname)
 if os.path.exists(team_outpath):
     shutil.rmtree(team_outpath)
 os.makedirs(team_outpath)
-os.system("chmod -R 777 ./* >/dev/null 2>&1")  # ignore output warnings/errors of this command with >/dev/null 2>&1
+# os.system("chmod -R 777 ./* >/dev/null 2>&1")  # ignore output warnings/errors of this command with >/dev/null 2>&1
 
 # Evaluation Metrics
 metric = OrderedDict()
@@ -426,7 +438,7 @@ for case in tqdm(test_cases):
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         infer_time = time.time() - start_time
 
-        if result.returncode != 0:
+        if (result.returncode != 0) or verbose:
             print("### STDOUT ###")
             for result_line in result.stdout.split("\n"):
                 print(result_line)

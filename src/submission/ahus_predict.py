@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from jaxtyping import Integer
-from monai.transforms import CropForeground
+from monai.transforms import DivisiblePad
 
 from src.model.build_ahus_model import model_registry
 from src.submission.segmentation import Segmenter, segmenter_registry
@@ -26,8 +26,10 @@ class VolumeTransforms:
         self.size_threshold = size_threshold
         self.pooling_factors = [1, 1, 1]
         self.crop_slices = None
+        self.pad_values = None
         self.orig_shape = None
-        self.padded_shape = None
+        self.cropped_shape = None
+        self.padder = DivisiblePad(k=8, method="end", value=0)
 
     @staticmethod
     def _normalize_volume(volume: torch.Tensor) -> torch.Tensor:
@@ -42,7 +44,7 @@ class VolumeTransforms:
         volume[torch.isnan(volume)] = 0
         return volume
 
-    def _adaptive_max_pool(self, volume: torch.Tensor) -> torch.Tensor:
+    def _adaptive_max_pool(self, volume: torch.Tensor, boxes: torch.Tensor, points: torch.Tensor) -> torch.Tensor:
         shape = list(volume.shape[2:])  # D, H, W
         self.pooling_factors = [1, 1, 1]
         while volume.numel() > self.size_threshold:
@@ -52,81 +54,106 @@ class VolumeTransforms:
             volume = F.max_pool3d(volume, kernel_size=kernel_size)
             shape = list(volume.shape[2:])
             self.pooling_factors = [self.pooling_factors[i] * kernel_size[i] for i in range(3)]
-            print(volume.shape, volume.numel(), self.size_threshold)
+
+        boxes = boxes / torch.tensor(self.pooling_factors, device=boxes.device).view(1, 1, 3)
+        if points is not None:
+            points[0] = points[0] / torch.tensor(self.pooling_factors, device=points[0].device).view(1, 1, 3)
+        return volume, boxes, points
+
+    def _crop_volume(self, volume: torch.Tensor, boxes: torch.tensor, points: torch.Tensor) -> torch.Tensor:
+        crop_margin = 16
+
+        xmin = int(boxes[:, :, 0].min().item())
+        ymin = int(boxes[:, :, 1].min().item())
+        zmin = int(boxes[:, :, 2].min().item())
+        xmax = int(boxes[:, :, 0].max().item())
+        ymax = int(boxes[:, :, 1].max().item())
+        zmax = int(boxes[:, :, 2].max().item())
+        xmin = max(0, xmin - crop_margin)
+        ymin = max(0, ymin - crop_margin)
+        zmin = max(0, zmin - crop_margin)
+        xmax = min(volume.shape[2], xmax + crop_margin)
+        ymax = min(volume.shape[3], ymax + crop_margin)
+        zmax = min(volume.shape[4], zmax + crop_margin)
+
+        cropped = volume[:, :, xmin:xmax, ymin:ymax, zmin:zmax]
+        self.crop_slices = [slice(xmin, xmax), slice(ymin, ymax), slice(zmin, zmax)]
+
+        boxes[..., 0] = boxes[..., 0] - self.crop_slices[0].start
+        boxes[..., 1] = boxes[..., 1] - self.crop_slices[1].start
+        boxes[..., 2] = boxes[..., 2] - self.crop_slices[2].start
+        if points is not None:
+            points[0][..., 0] = points[0][..., 0] - self.crop_slices[0].start
+            points[0][..., 1] = points[0][..., 1] - self.crop_slices[1].start
+            points[0][..., 2] = points[0][..., 2] - self.crop_slices[2].start
+
+        self.cropped_shape = cropped.shape[2:]
+
+        return cropped, boxes, points
+
+    def _pad_divisible(self, volume: torch.Tensor, k: int = 8) -> torch.Tensor:
+        shape_before = volume.shape[2:]
+        volume = self.padder(volume.squeeze(0)).unsqueeze(0)
+        shape_after = volume.shape[2:]
+        self.pad_values = [shape_after[i] - shape_before[i] for i in range(3)]
         return volume
 
-    def _crop_volume(self, volume: torch.Tensor) -> torch.Tensor:
-        cropped = CropForeground(select_fn=lambda x: x > 0, k_divisible=8, allow_smaller=True)(
-            volume.squeeze(0)
-        ).unsqueeze(0)
-        self.crop_slices = []
-        for dim in range(3):
-            start = int((volume.shape[2 + dim] - cropped.shape[2 + dim]) // 2)
-            end = start + cropped.shape[2 + dim]
-            self.crop_slices.append(slice(start, end))
-        return cropped
-
-    def preprocess_volume(self, image5D: torch.Tensor) -> torch.Tensor:
-        image5D = image5D.clone()
-        self.orig_shape = image5D.shape[-3:]
+    def preprocess_volume(self, volume: torch.Tensor, boxes: torch.Tensor, points=torch.Tensor) -> torch.Tensor:
+        volume = volume.clone()
+        self.orig_shape = volume.shape[-3:]
 
         # Normalize
-        image5D = self._normalize_volume(image5D)
-
-        # Downsample with tracking
-        image5D = self._adaptive_max_pool(image5D)
-
-        self.padded_shape = image5D.shape[-3:]  # After pooling but before cropping
+        volume = self._normalize_volume(volume)
 
         # Crop and track slices
-        image5D = self._crop_volume(image5D)
-        print("C", image5D.shape)
+        volume, boxes, points = self._crop_volume(volume, boxes, points)
 
-        # Normalize again post-crop for safety
-        image5D = image5D / image5D.max()
-        print("D", image5D.shape)
-        return image5D
+        # Downsample with adaptive max pooling
+        volume, boxes, points = self._adaptive_max_pool(volume, boxes, points)
 
-    def transform_coordinates(self, coords: torch.Tensor, direction: str = "forward") -> torch.Tensor:
-        """
-        Returns coordinates in the cropped/pooled space.
-        """
-        coords = coords.clone()
-        if direction == "forward":
-            for i in range(3):
-                coords[..., i] = coords[..., i] / self.pooling_factors[i]
-                if self.crop_slices is not None:
-                    coords[..., i] -= self.crop_slices[i].start
-        return coords
+        # Pad to divisible size
+        volume = self._pad_divisible(volume)
+
+        return volume, boxes, points
+
+    # def transform_coordinates(self, coords: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     Returns coordinates in the cropped/pooled space.
+    #     """
+    #     coords = coords.clone()
+    #     for i in range(3):
+    #         if self.crop_slices is not None:
+    #             coords[..., i] -= self.crop_slices[i].start# / self.pooling_factors[i]
+    #         coords[..., i] = coords[..., i] / self.pooling_factors[i]
+    #     return coords
 
     def forward(
         self,
-        image5D: torch.Tensor,
+        volume: torch.Tensor,
         spacing: np.ndarray = None,
-        mask_logits: Optional[torch.Tensor] = None,
         points: Optional[List[torch.Tensor]] = None,
         boxes: Optional[torch.Tensor] = None,
     ):
-        image5D = self.preprocess_volume(image5D)
+        volume, boxes, points = self.preprocess_volume(volume, boxes, points)
 
-        if points is not None:
-            point_coords, point_labels = points
-            point_coords = self.transform_coordinates(point_coords, direction="forward")
-            points = [point_coords, point_labels]
-        if boxes is not None:
-            boxes = self.transform_coordinates(boxes, direction="forward")
-
-        return image5D, mask_logits, points, boxes
+        return volume, points, boxes
 
     def backward(self, mask_logits: torch.Tensor) -> torch.Tensor:
-        # Uncrop (pad back to pooled size)
+        if self.pad_values[0] > 0:
+            mask_logits = mask_logits[:, :, : -self.pad_values[0], :, :]
+        if self.pad_values[1] > 0:
+            mask_logits = mask_logits[:, :, :, : -self.pad_values[1], :]
+        if self.pad_values[2] > 0:
+            mask_logits = mask_logits[:, :, :, :, : -self.pad_values[2]]
+
+        mask_logits = F.interpolate(mask_logits, size=self.cropped_shape, mode="trilinear", align_corners=False)
+
         pad_sizes = []
         for dim in range(3):
-            cropped_len = mask_logits.shape[2 + dim]
-            full_len = self.padded_shape[dim]
             pad_before = self.crop_slices[dim].start
-            pad_after = full_len - pad_before - cropped_len
-            pad_sizes.extend([pad_before, pad_after])
+            pad_after = self.orig_shape[dim] - self.crop_slices[dim].stop
+            pad_sizes.extend([pad_after, pad_before])  # NOTE
+
         pad_sizes = pad_sizes[::-1]  # reverse for torch F.pad
         mask_logits = F.pad(mask_logits, pad_sizes)
 
@@ -193,13 +220,13 @@ class InferencePipeline:
             data["boxes"] = [
                 {
                     # First point
-                    "z_min": 1,
-                    "z_mid_y_min": 1,
-                    "z_mid_x_min": 1,
+                    "z_min": 0,
+                    "z_mid_y_min": 0,
+                    "z_mid_x_min": 0,
                     # Second point
-                    "z_max": image_shape[0] - 2,
-                    "z_mid_y_max": image_shape[1] - 2,
-                    "z_mid_x_max": image_shape[2] - 2,
+                    "z_max": image_shape[0] - 1,
+                    "z_mid_y_max": image_shape[1] - 1,
+                    "z_mid_x_max": image_shape[2] - 1,
                 }
             ]
             self._save_npz(boxes_path, boxes=data["boxes"])
@@ -227,8 +254,8 @@ class InferencePipeline:
 
     # -------------------- Inference Helpers -------------------- #
     def _transform(self, image3D_np: np.ndarray) -> torch.Tensor:
-        image5D: torch.Tensor = torch.tensor(image3D_np).float().unsqueeze(0).unsqueeze(0)
-        return image5D
+        volume: torch.Tensor = torch.tensor(image3D_np).float().unsqueeze(0).unsqueeze(0)
+        return volume
 
     def _get_initial_boxes(self, data: Dict[str, Any]) -> torch.Tensor:
         """
@@ -322,6 +349,12 @@ class InferencePipeline:
 
         return mask_logits
 
+    def _log_model_view(self, mask_logits: torch.Tensor, volume: torch.tensor, boxes: torch.Tensor) -> None:
+        pred_prob = torch.sigmoid(mask_logits)
+        pred_concat = torch.cat((torch.ones_like(mask_logits)[0:1] * 0.5, pred_prob), dim=0)
+        pred_long = pred_concat.argmax(dim=0).squeeze(0)
+        self.log_predictions_niigz(volume[0, 0], boxes, pred_long.squeeze(), save_dir="work_dir/inference_cropped")
+
     def predict(self, data: Dict[str, Any]) -> np.ndarray:
         # Most of the data is not in tensor format, so it needs to be converted
         boxes_orig_shape: torch.Tensor = self._get_initial_boxes(
@@ -331,32 +364,18 @@ class InferencePipeline:
         mask_logits: Optional[torch.Tensor] = self._get_mask_logits(data)
         spacing: np.ndarray = self._get_spacing(data)
 
-        image5D_orig_shape: torch.Tensor = self._transform(data["imgs"]).to(self.model_device)  # shape (1, 1, D, H, W)
-        image5D, mask_logits, points, boxes = self.coord_handler.forward(
-            image5D_orig_shape, spacing, mask_logits, points, boxes_orig_shape
-        )
-
-        # Temporary hack: boxes sometimes has values larger than the image size
-        # Clip the boxes to the image size
-        # TODO: fix this properly
-        assert boxes is not None
-        boxes[..., 0] = boxes[..., 0].clamp(0, image5D.shape[2] - 1)
-        boxes[..., 1] = boxes[..., 1].clamp(0, image5D.shape[3] - 1)
-        boxes[..., 2] = boxes[..., 2].clamp(0, image5D.shape[4] - 1)
-        # Do the same for point coordinates
-        if points is not None:
-            points[0][..., 0] = points[0][..., 0].clamp(0, image5D.shape[2] - 1)
-            points[0][..., 1] = points[0][..., 1].clamp(0, image5D.shape[3] - 1)
-            points[0][..., 2] = points[0][..., 2].clamp(0, image5D.shape[4] - 1)
+        volume_orig_shape: torch.Tensor = self._transform(data["imgs"]).to(self.model_device)  # shape (1, 1, D, H, W)
+        volume, points, boxes = self.coord_handler.forward(volume_orig_shape, spacing, points, boxes_orig_shape)
 
         # autocast
         # `model` assumes batch dimension
         with safe_autocast(device_type=self.model_device.split(":")[0]):
             # image_embeddings: list[(1, C, D, H, W)]
-            image_embeddings, _ = self.model.segresnet(image5D)
+            image_embeddings, _ = self.model.segresnet(volume)
             # mask_logits: (I, 1, D, H, W)
-            mask_logits = self._batched_decoder_inference(image_embeddings, mask_logits, points, boxes, batch_size=4)
+            mask_logits = self._batched_decoder_inference(image_embeddings, mask_logits, points, boxes, batch_size=8)
 
+        self._log_model_view(mask_logits, volume, boxes)
         self._save_mask_logits(mask_logits)
 
         # Still (I, 1, D, H, W) but now in original image space
@@ -371,30 +390,31 @@ class InferencePipeline:
             point_labels = points[1]
 
         with safe_autocast(device_type=self.segmenter_device.split(":")[0]):
+            device = self.segmenter_device
             binarized_pred_orig_shape: Integer[torch.Tensor, "image_depth image_height image_width"] = self.segmenter(
-                logits=mask_logits_orig_shape.to(self.segmenter.device),  # TODO: why is this device call necessary?
-                image=image5D.to(self.segmenter.device),
-                bbox=boxes.to(self.segmenter.device),
-                point_coords=point_coords.to(self.segmenter.device) if point_coords is not None else None,
-                point_labels=point_labels.to(self.segmenter.device) if point_labels is not None else None,
+                logits=mask_logits_orig_shape.to(device),  # TODO: why is this device call necessary?
+                image=volume.to(device),
+                bbox=boxes_orig_shape.to(device),
+                point_coords=point_coords.to(device) if point_coords is not None else None,
+                point_labels=point_labels.to(device) if point_labels is not None else None,
             )
 
         # Log function expects numpy arrays without batch/channel dimension for image and segmentations
         binarized_pred_orig_shape = binarized_pred_orig_shape.cpu().numpy()
-        image5D_orig_shape = image5D_orig_shape[0, 0].cpu().numpy()
+        volume_orig_shape = volume_orig_shape[0, 0].cpu().numpy()
 
         # Log predictions in original image space
-        self.log_predictions_niigz(image5D_orig_shape, boxes_orig_shape, binarized_pred_orig_shape)
+        self.log_predictions_niigz(volume_orig_shape, boxes_orig_shape, binarized_pred_orig_shape)
 
         return binarized_pred_orig_shape
 
     def log_predictions_niigz(
-        self, image5D: np.ndarray, boxes: torch.Tensor, binarized_pred: np.ndarray, save_dir: str = "work_dir/inference"
+        self, volume: np.ndarray, boxes: torch.Tensor, binarized_pred: np.ndarray, save_dir: str = "work_dir/inference"
     ) -> None:
         """
         Logs images, bboxes and binarized segmentations to NIfTI files.
 
-        image5D: np.ndarray[shape=(D, H, W)]
+        volume: np.ndarray[shape=(D, H, W)]
         boxes: torch.Tensor[shape=(I, 2, 3)]
         binarized_pred: np.ndarray[shape=(D, H, W)]
         """
@@ -407,7 +427,7 @@ class InferencePipeline:
         lab: nib.Nifti1Image = nib.Nifti1Image(binarized_pred.astype(np.float32), np.eye(4))
         nib.save(lab, pred_path)
 
-        img_nii: nib.Nifti1Image = nib.Nifti1Image(image5D.astype(np.float32), np.eye(4))
+        img_nii: nib.Nifti1Image = nib.Nifti1Image(volume.astype(np.float32), np.eye(4))
         nib.save(img_nii, img_path)
 
         box_volume = np.zeros_like(binarized_pred)

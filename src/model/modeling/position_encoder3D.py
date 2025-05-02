@@ -38,7 +38,8 @@ class PositionEmbeddingRandom3D(PositionEncoder3D):
 
     def _pe_encoding(self, coords: torch.Tensor) -> torch.Tensor:
         """Positionally encode points that are normalized to [0,1]."""
-        assert torch.all(coords >= 0) and torch.all(coords <= 1), "Position should be normalized to [0, 1]."
+        if not (torch.all(coords >= 0) and torch.all(coords <= 1)):
+            print(f"WARNING: Position should be normalized to [0, 1]. Got {coords}.")
         coords = 2 * coords - 1
         coords = coords @ self.positional_encoding_gaussian_matrix
         coords = 2 * torch.pi * coords
@@ -120,7 +121,8 @@ class SkewSymmetricPositionEncoder(PositionEncoder3D):
         return skew_symmetric_matrix
 
     def _compute_rotary_matrix(self, position: torch.Tensor) -> torch.Tensor:
-        assert torch.all(position >= 0) and torch.all(position <= 1), "Position should be normalized to [0, 1]."
+        if not (torch.all(position >= 0) and torch.all(position <= 1)):
+            print(f"WARNING: Position should be normalized to [0, 1]. Got {position}.")
         skew_symmetric_matrix = self.calculate_skew_symmetric_matrix(self.parameter).clone()
         pos_sum = (position.unsqueeze(-1).unsqueeze(-1) * skew_symmetric_matrix).sum(dim=-3)
         rot_mat = torch.matrix_exp(pos_sum)

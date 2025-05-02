@@ -1,1 +1,0 @@
-python src/train_masked_autoencoder.py --batch_size 16 --model_type vit_ae_norm --num_workers 8 --accumulation_steps 4 --task_name mar9 --weight_decay 1e-5 --checkpoint work_dir/mar8/vit_mae_latest.pth --allow_partial_weight --num_epochs 10000 --lr 1e-4
