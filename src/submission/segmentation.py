@@ -5,7 +5,9 @@ from jaxtyping import Integer
 from tensordict import TensorDict
 
 from src.custom_types import BBox, Image, Mask, PointCoords, PointLabels, Segmentation
-from src.rl.agents import DDPGThresholdAgent
+
+# from src.rl.agents.attention_based.ppo import DDPGThresholdAgent
+from src.rl.agents.mask_based.ddpg import DDPGThresholdAgent
 
 
 class Segmenter(Protocol):

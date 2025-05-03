@@ -35,6 +35,9 @@ class PromptAttentionNet(nn.Module):
         self.threshold_embedding = nn.Parameter(torch.randn(self.emb_dim))
         self.threshold_embedding.data = normalize(self.threshold_embedding.data, dim=-1)
 
+        self.embedding_for_missing_prompts = nn.Parameter(torch.randn(self.emb_dim))
+        self.embedding_for_missing_prompts.data = normalize(self.embedding_for_missing_prompts.data, dim=-1)
+
         self.attn_over_prompts = nn.ModuleList()
         for _ in range(num_layers):
             mlp = MLPBlock3D(emb_dim, mlp_dim=emb_dim * 2, act=nn.GELU)
@@ -49,15 +52,18 @@ class PromptAttentionNet(nn.Module):
 
         self.projection = nn.Linear(emb_dim, output_size)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
         Args:
             x: (B, N, emb_dim) where B is the batch size and N is the number of prompts.
+            mask: (B, N) where B is the batch size and N is the number of prompts.
 
         Returns:
             x: (B, output_size) where B is the batch size.
         """
         B, N, emb_dim = x.shape
+        # prompts that are not observed yet (mask=0), we set equal to the learnable vector
+        x = x * mask.unsqueeze(-1) + (~mask).unsqueeze(-1) * self.embedding_for_missing_prompts
         expanded_threshold_embedding = self.threshold_embedding[None, None, :].expand(B, -1, -1)
         x = torch.cat([x, expanded_threshold_embedding], dim=1)  # (B, N+1, emb_dim)
 
@@ -79,3 +85,4 @@ class PromptAttentionNet(nn.Module):
 
     def normalize_weights(self):
         self.threshold_embedding.data = normalize(self.threshold_embedding.data, dim=-1)
+        self.embedding_for_missing_prompts.data = normalize(self.embedding_for_missing_prompts.data, dim=-1)

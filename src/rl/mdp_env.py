@@ -113,10 +113,14 @@ class InteractiveSegmentationEnv(EnvBase):
                 dtype=torch.float32,
                 domain="continuous",
             ),
-            prompt_embeddings=Unbounded(
-                shape=self.batch_size + (self.n_steps + 1, -1),
+            padded_prompt_embeddings=Unbounded(
+                shape=self.batch_size + (self.n_steps + 2, -1),  # bbox + number of points(steps)
                 dtype=torch.float32,
                 domain="continuous",
+            ),
+            # Since prompt_embeddings is padded, we need a mask to ignore the padding
+            prompt_embedding_attention_mask=Binary(
+                shape=self.batch_size + (self.n_steps + 2,), dtype=torch.bool, device=self.device
             ),
             # bbox is actually bounded, but we don't know the image size beforehand
             bbox=Unbounded(
@@ -206,6 +210,19 @@ class InteractiveSegmentationEnv(EnvBase):
             None,
             None,
         )
+        padded_prompt_embeddings = torch.zeros(
+            tensordict.batch_size + (self.n_steps + 2, prompt_embeddings.shape[2]),  # bbox + number of points(steps)
+            dtype=torch.float32,
+            device=tensordict.device,
+        )
+        padded_prompt_embeddings[:, : prompt_embeddings.shape[1], :] = prompt_embeddings
+        prompt_embedding_attention_mask = torch.full(
+            tensordict.batch_size + (self.n_steps + 2,),
+            False,
+            dtype=torch.bool,
+            device=tensordict.device,
+        )
+        prompt_embedding_attention_mask[:, : prompt_embeddings.shape[1]] = True
 
         td = TensorDict(
             {
@@ -214,7 +231,8 @@ class InteractiveSegmentationEnv(EnvBase):
                 "image_embedding2": image_embeddings[1],
                 "image_embedding3": image_embeddings[2],
                 "image_embedding4": image_embeddings[3],
-                "prompt_embeddings": prompt_embeddings,
+                "padded_prompt_embeddings": padded_prompt_embeddings,
+                "prompt_embedding_attention_mask": prompt_embedding_attention_mask,
                 "bbox": bbox,
                 "mask": low_res_mask,
                 "point_coords": torch.zeros(
@@ -247,6 +265,22 @@ class InteractiveSegmentationEnv(EnvBase):
     def _step(self, tensordict: TensorDictBase):
         # Only the first "steps" points and labels have meaningful values
         step: int = tensordict["step"][0]
+
+        # Segment using threshold chosen by the agent
+        segmentation = self.post_processing_fn(tensordict["image"], tensordict["mask"], tensordict["threshold"])
+
+        # Reward depends on segmentation
+        reward = self.reward_fn(segmentation, tensordict["true_segmentation"], tensordict["step"])
+
+        # Get new points
+        new_point_coord, new_point_label = self.interaction_fn(segmentation, tensordict["true_segmentation"])
+        # add new point coord and new label to the point_coords and point_labels tensors
+        new_point_coords = tensordict["point_coords"].clone()
+        new_point_coords[:, [step], :] = new_point_coord
+        new_point_labels = tensordict["point_labels"].clone()
+        new_point_labels[:, [step]] = new_point_label
+
+        # Update the mask and prompt embeddings using the new points
         new_low_res_mask, new_prompt_embeddings = self.mask_fn(
             [
                 tensordict["image_embedding1"],
@@ -255,22 +289,24 @@ class InteractiveSegmentationEnv(EnvBase):
                 tensordict["image_embedding4"],
             ],
             tensordict["bbox"],
-            tensordict["point_coords"][..., :step, :],
-            tensordict["point_labels"][..., :step],
+            tensordict["point_coords"][..., : step + 1, :],
+            tensordict["point_labels"][..., : step + 1],
             tensordict["mask"],
         )
-
-        # Always use upsampling method 0 for now
-        segmentation = self.post_processing_fn(tensordict["image"], new_low_res_mask, tensordict["threshold"])
-
-        new_point_coord, new_point_label = self.interaction_fn(segmentation, tensordict["true_segmentation"])
-        # add new point coord and new label to the point_coords and point_labels tensors
-        new_point_coords = tensordict["point_coords"].clone()
-        new_point_coords[:, [step], :] = new_point_coord
-        new_point_labels = tensordict["point_labels"].clone()
-        new_point_labels[:, [step]] = new_point_label
-
-        reward = self.reward_fn(segmentation, tensordict["true_segmentation"], tensordict["step"])
+        padded_prompt_embeddings = torch.zeros(
+            tensordict.batch_size
+            + (self.n_steps + 2, new_prompt_embeddings.shape[2]),  # bbox + number of points(steps)
+            dtype=torch.float32,
+            device=tensordict.device,
+        )
+        padded_prompt_embeddings[:, : new_prompt_embeddings.shape[1], :] = new_prompt_embeddings
+        prompt_embedding_attention_mask = torch.full(
+            tensordict.batch_size + (self.n_steps + 2,),
+            False,
+            dtype=torch.bool,
+            device=tensordict.device,
+        )
+        prompt_embedding_attention_mask[:, : new_prompt_embeddings.shape[1]] = True
 
         done = torch.full(tensordict.batch_size + DONE_SHAPE, False, dtype=torch.bool, device=tensordict.device)
         done[tensordict["step"] + 1 == self.n_steps] = True
@@ -282,7 +318,8 @@ class InteractiveSegmentationEnv(EnvBase):
                 "image_embedding2": tensordict["image_embedding2"],
                 "image_embedding3": tensordict["image_embedding3"],
                 "image_embedding4": tensordict["image_embedding4"],
-                "prompt_embeddings": new_prompt_embeddings,
+                "padded_prompt_embeddings": padded_prompt_embeddings,
+                "prompt_embedding_attention_mask": prompt_embedding_attention_mask,
                 "bbox": tensordict["bbox"],
                 "mask": new_low_res_mask,
                 "point_coords": new_point_coords,
