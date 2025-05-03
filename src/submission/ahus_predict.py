@@ -238,7 +238,7 @@ class InferencePipeline:
 
     def _handle_mask_logits(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        If 'mask_logits' is present in data, override it by loading from its auxiliary file.
+        If a file with 'mask_logits_' prefix exists, use it to override mask_logits in data.
         """
         mask_logits_path: str = self._get_auxiliary_path(self.full_file, "mask_logits_")
         if os.path.exists(mask_logits_path):
