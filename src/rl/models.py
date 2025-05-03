@@ -1,4 +1,5 @@
-from typing import Protocol
+import torch
+from torch import nn
 
 from src.model.modeling.common import normalize
 from src.model.modeling.normalized_mask_decoder3D import (
@@ -6,16 +7,6 @@ from src.model.modeling.normalized_mask_decoder3D import (
     MLPBlock3D,
 )
 
-import torch
-from pathlib import Path
-from tensordict import TensorDictBase
-from tensordict.nn import TensorDictModule
-from torch import Tensor, nn
-from torchrl.data import Bounded, ListStorage, TensorDictReplayBuffer
-from torchrl.modules import NormalParamExtractor, ProbabilisticActor, TanhNormal, ValueOperator
-from torchrl.objectives import ClipPPOLoss, DDPGLoss, SoftUpdate
-
-from src.rl.utils import calculate_norm
 
 class TransformerLayer(nn.Module):
     def __init__(self, attention, mlp):
@@ -68,7 +59,7 @@ class PromptAttentionNet(nn.Module):
         """
         B, N, emb_dim = x.shape
         expanded_threshold_embedding = self.threshold_embedding[None, None, :].expand(B, -1, -1)
-        x = torch.cat([x, expanded_threshold_embedding], dim=1) # (B, N+1, emb_dim)
+        x = torch.cat([x, expanded_threshold_embedding], dim=1)  # (B, N+1, emb_dim)
 
         for layer in self.attn_over_prompts:
             x = layer(x)

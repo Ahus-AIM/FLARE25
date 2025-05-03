@@ -1,18 +1,18 @@
 import argparse
-from pathlib import Path
 import os
 from os.path import expandvars
+from pathlib import Path
 
-from dotenv import load_dotenv
 import torch
-import wandb
 import yaml
-# from dotenv import load_dotenv
+from dotenv import load_dotenv
 from monai.transforms.croppad.array import CropForeground
+from tensordict import TensorDictBase
 from torchrl.collectors import SyncDataCollector
 from torchrl.envs import ExcludeTransform, ExplorationType, check_env_specs, set_exploration_type
 from tqdm import tqdm
 
+import wandb
 from src.dataset.npz_dataset import NPZDataset
 from src.model.build_ahus_model import model_registry
 from src.rl.agents import THRESHOLD_AGENT_REGISTRY, ThresholdAgent
@@ -68,6 +68,10 @@ def main():
     )
     check_env_specs(env)
 
+    # Get image, should always be the same
+    # image1 = env.reset()["image"].cpu()
+    # image2 = env.reset()["image"].cpu()
+    # assert torch.equal(image1, image2), "Image should always be the same"
 
     # Static type is ThresholdAgent, dynamic type is chosen by config
     agent_cls = THRESHOLD_AGENT_REGISTRY[config.agent.type]
@@ -76,10 +80,19 @@ def main():
         **config_dict["agent"]["kwargs"],
     )
 
+    # We want to compare our agent to a baseline policy of always choosing the threshold 0.5
+    def baseline_policy(td: TensorDictBase) -> TensorDictBase:
+        # Always choose the threshold 0.5
+        td["threshold"] = 0.5 * torch.ones(td.batch_size + (1,), device=td.device)
+        return td
+
     # Debug manually
-    td = env.reset()
-    td = agent.policy(td)
-    td = env.step(td)
+    # td = env.reset()
+    # td = agent.policy(td)
+    # td = env.step(td)
+    # td = td["next"]
+    # td = agent.policy(td)
+    # td = env.step(td)
 
     keys_to_exclude = [
         "bbox",
@@ -95,15 +108,15 @@ def main():
         "true_segmentation",
         # next
         ("next", "bbox"),
-        ("next","image"),
-        ("next","image_embedding1"),
-        ("next","image_embedding2"),
-        ("next","image_embedding3"),
-        ("next","image_embedding4"),
-        ("next","mask"),
-        ("next","point_coords"),
-        ("next","point_labels"),
-        ("next","true_segmentation"),
+        ("next", "image"),
+        ("next", "image_embedding1"),
+        ("next", "image_embedding2"),
+        ("next", "image_embedding3"),
+        ("next", "image_embedding4"),
+        ("next", "mask"),
+        ("next", "point_coords"),
+        ("next", "point_labels"),
+        ("next", "true_segmentation"),
     ]
     collector = SyncDataCollector(
         env,
@@ -125,6 +138,11 @@ def main():
 
     try:
         for batch_idx, td in tqdm(enumerate(collector), total=config.total_frames):
+            # DEBUG: image should always be the same
+            # assert torch.equal(
+            #     td["image"].cpu(), image
+            # ), "Image should always be the same"
+
             # Agent and batch dimension are collapsed
             td = td.reshape(-1, *td.shape[2:])
 
@@ -138,6 +156,7 @@ def main():
                     "step": td["step"].item(),
                     "loss": loss,
                     "grad_norm": grad_norm,
+                    "prompt_embeddings norm": td["prompt_embeddings"].norm().item(),
                     **agent.get_info(),
                 }
             )
@@ -149,15 +168,19 @@ def main():
                     set_exploration_type(ExplorationType.DETERMINISTIC),
                 ):
                     eval_td = env.rollout(max_steps=config.eval_max_steps, policy=agent.policy)
+                    baseline_td = env.rollout(max_steps=config.eval_max_steps, policy=baseline_policy)
 
                     # Move to cpu for logging
                     eval_td = eval_td.to("cpu")
+                    baseline_td = baseline_td.to("cpu")
 
                     # Log evaluation results
                     wandb.log(
                         {
                             "eval reward": eval_td["next", "reward"].mean().item(),
                             "eval threshold": eval_td["threshold"].mean().item(),
+                            "baseline reward": baseline_td["next", "reward"].mean().item(),
+                            "baseline threshold": baseline_td["threshold"].mean().item(),
                         }
                     )
     except KeyboardInterrupt:

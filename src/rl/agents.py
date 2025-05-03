@@ -1,18 +1,8 @@
+from pathlib import Path
 from typing import Protocol, Type
-import torch.nn.functional as F
-
-from rich.prompt import Prompt
-
-from src.custom_types import PromptEmbeddings, Threshold
-from src.rl.models import PromptAttentionNet
-from src.model.modeling.common import normalize
-from src.model.modeling.normalized_mask_decoder3D import (
-    Attention,
-    MLPBlock3D,
-)
 
 import torch
-from pathlib import Path
+import torch.nn.functional as F
 from tensordict import TensorDictBase
 from tensordict.nn import TensorDictModule
 from torch import Tensor, nn
@@ -20,6 +10,8 @@ from torchrl.data import Bounded, ListStorage, PrioritizedSampler, TensorDictRep
 from torchrl.modules import NormalParamExtractor, ProbabilisticActor, TanhNormal, ValueOperator
 from torchrl.objectives import ClipPPOLoss, DDPGLoss, SoftUpdate
 
+from src.custom_types import PromptEmbeddings, Threshold
+from src.rl.models import PromptAttentionNet
 from src.rl.utils import calculate_norm
 
 
@@ -392,6 +384,7 @@ class DDPGThresholdAgent(ThresholdAgent):
         }
         return info
 
+
 class AttentionThresholdValueNet(nn.Module):
     def __init__(self, backbone: PromptAttentionNet, backbone_out_size: int):
         super().__init__()
@@ -411,24 +404,6 @@ class AttentionThresholdValueNet(nn.Module):
         x = torch.cat((x, threshold), dim=1)  # (N, backbone_out_size + 1)
         return self.head(x)
 
-class AttentionThresholdPolicyNet(nn.Module):
-    def __init__(self, backbone: PromptAttentionNet, backbone_out_size: int):
-        super().__init__()
-        self.backbone = backbone
-        assert backbone_out_size // 2 >= 2, "Backbone output size must be at least 4"
-        self.backbone_out_size = backbone_out_size
-        self.head = nn.Sequential(
-            nn.Linear(backbone_out_size, backbone_out_size // 2),
-            nn.ReLU(),
-            nn.Linear(backbone_out_size // 2, 1),
-        )
-
-    def forward(self, prompt_embeddings: PromptEmbeddings, threshold: Threshold) -> Tensor:
-        # Pass prompt embeddings through the backbone
-        x = self.backbone(prompt_embeddings)  # (N, backbone_out_size)
-        # Concatenate the threshold to the output of the backbone
-        x = torch.cat((x, threshold), dim=1)  # (N, backbone_out_size + 1)
-        return self.head(x)
 
 class DummyBackbone(nn.Module):
     def __init__(self, input_size: int, output_size: int):
@@ -442,18 +417,18 @@ class DummyBackbone(nn.Module):
             nn.ReLU(),
             nn.Linear(self.input_size // 2, self.input_size // 4),
             nn.ReLU(),
-            nn.Linear(self.input_size // 4, self.output_size), # (batch_size, n_points, output_size)
+            nn.Linear(self.input_size // 4, self.output_size),  # (batch_size, n_points, output_size)
         )
 
     def forward(self, x: Tensor) -> Tensor:
-        x = self.net1(x) # (batch_size, n_points, output_size)
-        x = x.permute(0, 2, 1) # (batch_size, output_size, n_points)
-        x = F.avg_pool1d(x, kernel_size=x.shape[-1]) # (batch_size, output_size, 1)
-        x = x.squeeze(-1) # (batch_size, output_size)
+        x = self.net1(x)  # (batch_size, n_points, output_size)
+        x = x.permute(0, 2, 1)  # (batch_size, output_size, n_points)
+        x = F.avg_pool1d(x, kernel_size=x.shape[-1])  # (batch_size, output_size, 1)
+        x = x.squeeze(-1)  # (batch_size, output_size)
         return x
 
 
-class AttentionThresholdAgent(ThresholdAgent):
+class AttentionDDPGThresholdAgent(ThresholdAgent):
     def __init__(
         self,
         device: torch.device,
@@ -461,7 +436,7 @@ class AttentionThresholdAgent(ThresholdAgent):
         update_tau: float,
         replay_buffer_size,
         num_optim: int,
-        prompt_embedding_dim: int, # Dimensionality of prompt embeddings as produced by the image model
+        prompt_embedding_dim: int,  # Dimensionality of prompt embeddings as produced by the image model
         max_grad_norm=1.0,
         rb_alpha: float = 0.6,
         rb_beta: float = 0.4,
@@ -524,6 +499,7 @@ class AttentionThresholdAgent(ThresholdAgent):
             for module in self.backbone.modules():
                 if hasattr(module, "normalize_weights"):
                     module.normalize_weights()
+
         self.optim.register_step_post_hook(optim_normalize_hook)
 
         # Every sample added to the replay buffer (images etc.) can have different shapes, so use a normal list
@@ -533,7 +509,7 @@ class AttentionThresholdAgent(ThresholdAgent):
         )
 
     def policy(self, td: TensorDictBase) -> TensorDictBase:
-        return self.policy_module(td.to(self.device))
+        return self.policy_module(td.to(self.device)).to(td.device)
 
     def _sample_and_optimize(self):
         """
@@ -651,9 +627,177 @@ class AttentionThresholdAgent(ThresholdAgent):
         return info
 
 
+class AttentionPPOThresholdAgent(ThresholdAgent):
+    def __init__(
+        self,
+        device: torch.device,
+        lr: float,
+        update_tau: float,
+        replay_buffer_size,
+        num_optim: int,
+        prompt_embedding_dim: int,  # Dimensionality of prompt embeddings as produced by the image model
+        max_grad_norm=1.0,
+    ):
+        self.device = device
+        self.lr = lr
+        self.update_tau = update_tau
+        self.replay_buffer_size = replay_buffer_size
+        self.num_optim = num_optim
+        self.prompt_embedding_dim = prompt_embedding_dim
+        self.max_grad_norm = max_grad_norm
+        self.backbone_out_size = 64
+
+        # self.backbone = PromptAttentionNet(
+        #     num_layers=2,
+        #     emb_dim=self.prompt_embedding_dim,
+        #     num_heads=4,
+        #     output_size=self.backbone_out_size,
+        # ).to(self.device)
+
+        self.backbone = DummyBackbone(
+            input_size=self.prompt_embedding_dim,
+            output_size=self.backbone_out_size,
+        ).to(self.device)
+
+        # Define the actor network
+        self.actor_net = nn.Sequential(
+            self.backbone,
+            nn.Linear(self.backbone_out_size, self.backbone_out_size // 2),
+            nn.ReLU(),
+            nn.Linear(self.backbone_out_size // 2, 2),  # loc and scale
+            NormalParamExtractor(),
+        ).to(self.device)
+
+        self.deterministic_policy_module = TensorDictModule(
+            self.actor_net, in_keys=["prompt_embeddings"], out_keys=["loc", "scale"]
+        )
+        self.probabilistic_policy_module = ProbabilisticActor(
+            module=self.deterministic_policy_module,
+            in_keys=["loc", "scale"],
+            out_keys=["threshold"],
+            distribution_class=TanhNormal,
+            distribution_kwargs={"low": 0, "high": 1},
+            return_log_prob=True,
+        )
+
+        self.value_net = nn.Sequential(
+            self.backbone,
+            nn.ReLU(),
+            nn.Linear(self.backbone_out_size, self.backbone_out_size // 2),
+            nn.ReLU(),
+            nn.Linear(self.backbone_out_size // 2, 1),  # (batch_size, 1)
+        ).to(self.device)
+
+        self.value_module = TensorDictModule(
+            module=self.value_net, in_keys=["prompt_embeddings"], out_keys=["state_value"]
+        )
+
+        self.loss_module = ClipPPOLoss(
+            actor_network=self.probabilistic_policy_module,
+            critic_network=self.value_module,
+        )
+        # self.loss_keys = ["loss_objective", "loss_critic"]
+        self.loss_keys = ["loss_critic", "loss_entropy", "loss_objective"]
+        self.optim = torch.optim.Adam(self.loss_module.parameters(), lr=self.lr)
+
+        # def optim_normalize_hook(optimizer, *args, **kwargs):
+        #     for module in self.backbone.modules():
+        #         if hasattr(module, "normalize_weights"):
+        #             module.normalize_weights()
+        # self.optim.register_step_post_hook(optim_normalize_hook)
+
+    def policy(self, td: TensorDictBase) -> TensorDictBase:
+        return self.probabilistic_policy_module(td.to(self.device)).to(td.device)
+
+    def process_batch(self, td: TensorDictBase):
+        # Move the batch to the device
+        td = td.to(self.device)
+
+        # Zero the gradients
+        self.optim.zero_grad()
+
+        # Compute the loss
+        loss_td = self.loss_module(td)
+
+        loss: Tensor = sum(loss_td[k] for k in self.loss_keys)  # type: noqa
+
+        # Backpropagation
+        loss.backward()
+
+        # Clip gradients
+        grad_norm = nn.utils.clip_grad_norm_(self.loss_module.parameters(), max_norm=self.max_grad_norm)
+
+        # Update the policy and value networks
+        self.optim.step()
+
+        return loss.item(), grad_norm.item()
+
+    def save(self, path: Path) -> None:
+        """
+        Save the model weights and hyperparameters to a single file.
+
+        Args:
+            path (str): Path to the file where the model and hyperparameters will be saved.
+        """
+        # TODO: Save the replay buffer as well
+        # Prepare the data to save
+        checkpoint = {
+            "policy_module_state_dict": self.deterministic_policy_module.state_dict(),
+            "value_module_state_dict": self.value_module.state_dict(),
+            "config": {
+                "lr": self.lr,
+                "update_tau": self.update_tau,
+                "replay_buffer_size": self.replay_buffer_size,
+                "num_optim": self.num_optim,
+                "max_grad_norm": self.max_grad_norm,
+            },
+        }
+
+        # Save everything in one file
+        torch.save(checkpoint, path)
+
+    @staticmethod
+    def load(path: Path, device: torch.device) -> "DDPGThresholdAgent":
+        """
+        Load the policy model weights and hyperparameters from a single file.
+
+        Args:
+            path (str): Path to the file containing the model and hyperparameters
+            device (torch.device): Device to load the model on
+        """
+        # TODO: Load the replay buffer as well
+        # Load the combined checkpoint
+        data = torch.load(path, map_location=device)
+        config = data["config"]
+
+        # Create the agent using the loaded hyperparameters
+        agent = DDPGThresholdAgent(
+            device=device,
+            lr=config["lr"],
+            update_tau=config["update_tau"],
+            replay_buffer_size=config["replay_buffer_size"],
+            num_optim=config["num_optim"],
+            max_grad_norm=config["max_grad_norm"],
+        )
+
+        # Load the model weights
+        agent.policy_module.load_state_dict(data["policy_module_state_dict"])
+        agent.value_module.load_state_dict(data["value_module_state_dict"])
+
+        return agent
+
+    def get_info(self) -> dict:
+        info = {
+            "value norm": calculate_norm(self.value_net),
+            "actor norm": calculate_norm(self.actor_net),
+            # "replay buffer size": len(self.replay_buffer),
+        }
+        return info
+
 
 THRESHOLD_AGENT_REGISTRY: dict[str, Type[ThresholdAgent]] = {
     # "PPO": PPOThresholdAgent,
     "DDPG": DDPGThresholdAgent,
-    "attention": AttentionThresholdAgent,
+    "attention_DDPG": AttentionDDPGThresholdAgent,
+    "attention_PPO": AttentionPPOThresholdAgent,
 }

@@ -114,7 +114,7 @@ class InteractiveSegmentationEnv(EnvBase):
                 domain="continuous",
             ),
             prompt_embeddings=Unbounded(
-                shape=self.batch_size + (-1, -1),
+                shape=self.batch_size + (self.n_steps + 1, -1),
                 dtype=torch.float32,
                 domain="continuous",
             ),
@@ -272,7 +272,7 @@ class InteractiveSegmentationEnv(EnvBase):
 
         reward = self.reward_fn(segmentation, tensordict["true_segmentation"], tensordict["step"])
 
-        done = torch.full(tensordict.batch_size + DONE_SHAPE, False, dtype=torch.bool, device=self.device)
+        done = torch.full(tensordict.batch_size + DONE_SHAPE, False, dtype=torch.bool, device=tensordict.device)
         done[tensordict["step"] + 1 == self.n_steps] = True
 
         return TensorDict(
@@ -312,17 +312,17 @@ def get_image_embedder_fn(
 def get_mask_fn(ahus_model: AhusModel, ahus_model_device: torch.device, env_device: torch.device) -> MaskFn:
     def mask_fn(
         image_embeddings: List[ImageEmbedding],
-        bbox: BBox|None,
-        point_coords: PointCoords|None,
-        point_labels: PointLabels|None,
-        mask: Mask|None,
+        bbox: BBox | None,
+        point_coords: PointCoords | None,
+        point_labels: PointLabels | None,
+        mask: Mask | None,
     ) -> Tuple[Mask, PromptEmbeddings]:
         # TODO: this looks bad
         image_embeddings = image_embeddings[::-1]
         image_embeddings = [emb.to(ahus_model_device) for emb in image_embeddings]
 
         # Assume that if either point_coords or point_labels is None, then both are None
-        if point_coords is None or point_labels is not None:
+        if point_coords is None or point_labels is None:
             points = None
         else:
             points = (point_coords.to(ahus_model_device), point_labels.to(ahus_model_device))
@@ -380,6 +380,14 @@ def infinite_loader(dataset, batch_size=1, shuffle=True):
             yield batch
 
 
+def single_sample_loader(dataset):
+    assert len(dataset) == 1
+    loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    sample = next(iter(loader))
+    while True:
+        yield sample
+
+
 def get_env(ahus_model: AhusModel, ahus_model_device: torch.device, env_device: torch.device, dataset: NPZDataset):
     env = InteractiveSegmentationEnv(
         n_steps=5,
@@ -388,10 +396,13 @@ def get_env(ahus_model: AhusModel, ahus_model_device: torch.device, env_device: 
         post_processing_fn=get_post_processing_fn(),
         interaction_fn=get_interaction_fn(),
         reward_fn=get_reward_fn(),
-        dataset_iter=infinite_loader(
+        # dataset_iter=infinite_loader(
+        #     dataset,
+        #     batch_size=1,
+        #     shuffle=True,
+        # ),
+        dataset_iter=single_sample_loader(
             dataset,
-            batch_size=1,
-            shuffle=True,
         ),
         device=env_device,
     )

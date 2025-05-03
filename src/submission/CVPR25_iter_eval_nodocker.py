@@ -116,6 +116,7 @@ a mandatory input.
 
 import os
 import subprocess
+from posixpath import expandvars
 
 from tqdm import tqdm
 

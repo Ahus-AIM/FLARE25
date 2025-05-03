@@ -17,7 +17,7 @@ class NPZDataset(Dataset):
         data_suffix: str = "_resampled.npz",
         load_n_first: Optional[int] = None,
         gt_dir: Optional[str] = None,
-        label_dtype = torch.uint8,
+        label_dtype=torch.uint8,
         **kwargs: Any,
     ) -> None:
         """

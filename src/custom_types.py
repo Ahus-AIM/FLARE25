@@ -1,7 +1,7 @@
 from collections.abc import Callable
+from typing import TypedDict
 
 import torch
-from beartype.typing import List, Tuple, TypedDict
 from jaxtyping import Float, Integer
 from torch import Tensor
 
@@ -37,15 +37,15 @@ Step = Integer[Tensor, f"batch {size_to_str(STEP_SHAPE)}"]
 Reward = Float[Tensor, f"batch {size_to_str(REWARD_SHAPE)}"]
 
 # An image embedder function returns a list of image embeddings, due to the unet nature of the model
-ImageEmbedderFn = Callable[[Image], List[ImageEmbedding]]
+ImageEmbedderFn = Callable[[Image], list[ImageEmbedding]]
 
 # A mask function is responsible for
 # 1. Producing a mask of logits.
 # 2. Producing new prompt embeddings.
 # All inputs except the image embeddings are optional, since image segmentation should be possible without labels.
 MaskFn = Callable[
-    [List[ImageEmbedding], BBox|None, PointCoords|None, PointLabels|None, Mask|None],  # previous mask
-    Tuple[Mask, PromptEmbeddings],  # new mask
+    [list[ImageEmbedding], BBox | None, PointCoords | None, PointLabels | None, Mask | None],  # previous mask
+    tuple[Mask, PromptEmbeddings],  # new mask
 ]
 
 PostProcessingFn = Callable[
@@ -63,7 +63,7 @@ InteractionFn = Callable[
         Segmentation,  # model segmentation
         Segmentation,  # true segmentation
     ],
-    Tuple[PointCoord, PointLabel],  # new point and label
+    tuple[PointCoord, PointLabel],  # new point and label
 ]
 
 RewardFn = Callable[
