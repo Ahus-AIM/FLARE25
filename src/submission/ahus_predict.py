@@ -336,7 +336,7 @@ class InferencePipeline:
 
             batch_image_embeddings = self._expand_image_embeddings(image_embeddings, batch_boxes.shape[0])
 
-            mask_logits_batch = decoder_forward(
+            mask_logits_batch, _ = decoder_forward(
                 self.model,
                 batch_image_embeddings,
                 mask_logits=mask_logits[batch_slice] if mask_logits is not None else None,
