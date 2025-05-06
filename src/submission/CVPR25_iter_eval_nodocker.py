@@ -223,7 +223,7 @@ parser.add_argument(
     default="cuda",
     help="Which device to run the segmenter on.",
 )
-parser.add_argument("--size_threshold", type=int, default=32**3, help="Size of the input image.")
+parser.add_argument("--size_threshold", type=int, default=128**3, help="Size of the input image.")
 
 
 args = parser.parse_args()
