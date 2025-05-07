@@ -1,14 +1,10 @@
 import numpy as np
 import torch
-from beartype import beartype
-from beartype.typing import List, Tuple
 from cucim.core.operations import morphology
-from jaxtyping import jaxtyped
 from scipy.ndimage import distance_transform_edt
 
 
-@jaxtyped(typechecker=beartype)
-def interact(prediction: torch.Tensor, gt_semantic_seg: torch.Tensor) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+def interact(prediction: torch.Tensor, gt_semantic_seg: torch.Tensor) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """
     Get clicks using the same method as in challenge evaluation.
 
@@ -59,7 +55,7 @@ def interact(prediction: torch.Tensor, gt_semantic_seg: torch.Tensor) -> Tuple[L
     return batch_points, batch_labels
 
 
-def compute_largest_error_point(error_mask: torch.Tensor) -> Tuple[int, int, int]:
+def compute_largest_error_point(error_mask: torch.Tensor) -> tuple[int, int, int]:
     if error_mask.device.type == "cuda":
         import cupy as cp
 

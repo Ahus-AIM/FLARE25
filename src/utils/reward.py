@@ -1,8 +1,5 @@
 import numpy as np
 import torch
-from beartype import beartype
-from beartype.typing import Tuple
-from jaxtyping import jaxtyped
 from scipy.integrate import cumulative_trapezoid
 
 from src.custom_types import Segmentation
@@ -36,7 +33,7 @@ def compute_multi_class_nsd(
 
 def compute_multi_class_dsc_nsd(
     gt: torch.Tensor, seg: torch.Tensor, spacing: torch.Tensor, tolerance: float = 2.0
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     assert gt.shape == seg.shape, "Input tensors must have the same shape"
     assert gt.ndim == 4, "Expected input shape (1, H, W, D)"
     nsd = []
@@ -56,10 +53,9 @@ def compute_multi_class_dsc_nsd(
 
 
 # NOTE: This function returns Rewards, but the last dimension is missing
-@jaxtyped(typechecker=beartype)
 def compute_multi_class_dsc_nsd_batch(
     gt: Segmentation, seg: Segmentation, spacing: torch.Tensor, tolerance: float = 2.0
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     assert gt.shape == seg.shape, "Input tensors must have the same shape"
     assert gt.ndim == 5, "Expected input shape (B, 1, H, W, D)"
     dsc = torch.zeros(gt.shape[0], device=gt.device)
@@ -75,7 +71,7 @@ def get_rewards(
     spacing: torch.Tensor,
     tolerance: float = 2.0,
     num_clicks: int = 5,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     assert seg.shape[1] == num_clicks + 1, "Expected input shape (B, num_clicks + 1, H, W, D)"
     dscs = torch.zeros((seg.shape[0], num_clicks + 1), device=gt.device)
     nsds = torch.zeros((seg.shape[0], num_clicks + 1), device=gt.device)

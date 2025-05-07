@@ -1,7 +1,6 @@
 from typing import Iterator
 
 import torch
-from beartype.typing import List, Tuple
 from tensordict import TensorDict, TensorDictBase
 from torch.utils.data import DataLoader
 from torchrl.data import Binary, Bounded, Composite, Unbounded
@@ -337,7 +336,7 @@ class InteractiveSegmentationEnv(EnvBase):
 def get_image_embedder_fn(
     ahus_model: AhusModel, ahus_model_device: torch.device, env_device: torch.device
 ) -> ImageEmbedderFn:
-    def image_embedder_fn(image: Image) -> List[ImageEmbedding]:
+    def image_embedder_fn(image: Image) -> list[ImageEmbedding]:
         image_embeddings = ahus_model.image_encoder(image.to(ahus_model_device))
         # Move the embeddings to the env device
         image_embeddings = [emb.to(env_device) for emb in image_embeddings]
@@ -348,12 +347,12 @@ def get_image_embedder_fn(
 
 def get_mask_fn(ahus_model: AhusModel, ahus_model_device: torch.device, env_device: torch.device) -> MaskFn:
     def mask_fn(
-        image_embeddings: List[ImageEmbedding],
+        image_embeddings: list[ImageEmbedding],
         bbox: BBox | None,
         point_coords: PointCoords | None,
         point_labels: PointLabels | None,
         mask: Mask | None,
-    ) -> Tuple[Mask, PromptEmbeddings]:
+    ) -> tuple[Mask, PromptEmbeddings]:
         # TODO: this looks bad
         image_embeddings = image_embeddings[::-1]
         image_embeddings = [emb.to(ahus_model_device) for emb in image_embeddings]
@@ -386,7 +385,7 @@ def get_post_processing_fn() -> PostProcessingFn:
 
 
 def get_interaction_fn() -> InteractionFn:
-    def interaction_fn(seg: Segmentation, true_seg: Segmentation) -> Tuple[PointCoord, PointLabel]:
+    def interaction_fn(seg: Segmentation, true_seg: Segmentation) -> tuple[PointCoord, PointLabel]:
         point_coord_list, point_label_list = interact(seg, true_seg)
         # Assume that we only receive one point coord and label
         point_coord: PointCoord = torch.cat(point_coord_list, dim=0)
