@@ -173,14 +173,14 @@ parser.add_argument(
     "--test_img_path",
     required=False,
     type=str,
-    default="../datasets/CVPR-BiomedSegFM/3D_val_npz",
+    default="data/CVPR-BiomedSegFM/3D_val_npz",
     help="testing data path",
 )
 parser.add_argument("-o", "--save_path", default="./demo_seg", type=str, help="segmentation output path")
 parser.add_argument(
     "-val_gts",
     "--validation_gts_path",
-    default="../datasets/CVPR-BiomedSegFM/3D_val_gt/3D_val_gt_interactive",
+    default="data/CVPR-BiomedSegFM/3D_val_gt/3D_val_gt_interactive",
     required=False,
     type=str,
     help="path to validation set (or final test set) GT files",
@@ -197,7 +197,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--model_checkpoint",
-    default="work_dir/rope_mixed_120_accum/model_latest.pth",
+    default="weights/rope_mixed_120_accum/model_latest.pth",
     type=str,
     required=False,
     help="Path to the model weights.",
@@ -223,7 +223,7 @@ parser.add_argument(
     default="cuda",
     help="Which device to run the segmenter on.",
 )
-parser.add_argument("--size_threshold", type=int, default=32**3, help="Size of the input image.")
+parser.add_argument("--size_threshold", type=int, default=128**3, help="Size of the input image.")
 
 
 args = parser.parse_args()

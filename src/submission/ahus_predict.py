@@ -100,12 +100,15 @@ class VolumeTransforms:
 
     def preprocess_volume(self, volume: torch.Tensor, boxes: torch.Tensor, points=torch.Tensor) -> torch.Tensor:
         volume = volume.clone()
+        # clone boxes since _crop_volume modifies them in-place
+        boxes = boxes.clone()
+
         self.orig_shape = volume.shape[-3:]
 
         # Normalize
         volume = self._normalize_volume(volume)
 
-        # Crop and track slices
+        # Crop and track slices.
         volume, boxes, points = self._crop_volume(volume, boxes, points)
 
         # Downsample with adaptive max pooling
@@ -336,7 +339,7 @@ class InferencePipeline:
 
             batch_image_embeddings = self._expand_image_embeddings(image_embeddings, batch_boxes.shape[0])
 
-            mask_logits_batch = decoder_forward(
+            mask_logits_batch, _ = decoder_forward(
                 self.model,
                 batch_image_embeddings,
                 mask_logits=mask_logits[batch_slice] if mask_logits is not None else None,
@@ -462,20 +465,22 @@ class InferencePipeline:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Predict multi-class segmentation of all input images in a folder.")
-    parser.add_argument("--load_path", type=str, help="Folder path to the input image.")
-    parser.add_argument("--save_path", type=str, help="Folder path to save the predictions.")
-    parser.add_argument("--model_type", type=str, required=True, help="Model type to use for prediction.")
+    parser.add_argument("--load_path", type=str, help="Folder path to the input image.", default="./inputs")
+    parser.add_argument("--save_path", type=str, help="Folder path to save the predictions.", default="./outputs")
+    parser.add_argument(
+        "--model_type", type=str, help="Model type to use for prediction.", default="ahus_model_rope_mixed"
+    )
     parser.add_argument(
         "--model_checkpoint",
         type=str,
-        required=True,
+        default="weights/rope_mixed_120_accum/model_latest.pth",
         help="Path to the model weights.",
     )
     parser.add_argument("--model_device", type=str, default="cuda", help="Which device to run the image model on.")
     parser.add_argument(
         "--segmenter_type",
         type=str,
-        required=True,
+        default="original",
         help="Segmenter type to use for binarizing.",
         choices=list(segmenter_registry.keys()),
     )
