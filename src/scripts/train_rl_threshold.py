@@ -3,18 +3,18 @@ import os
 from pathlib import Path
 
 import torch
-from torchrl_agents import Agent
 import yaml
 from monai.transforms.croppad.array import CropForeground
 from tensordict import TensorDictBase
 from torchrl.collectors import SyncDataCollector
 from torchrl.envs import ExcludeTransform, ExplorationType, check_env_specs, set_exploration_type
+from torchrl_agents import Agent
 from tqdm import tqdm
 
 import wandb
 from src.dataset.npz_dataset import NPZDataset
 from src.model.build_ahus_model import model_registry
-from src.rl.agents.registry import AttentionPPOThresholdAgent
+from src.rl.agents.attention_based.ddpg import AttentionDDPGThresholdAgent
 from src.rl.mdp_env import get_env
 from src.rl.utils import dict_to_namespace
 
@@ -69,7 +69,8 @@ def main():
     # image2 = env.reset()["image"].cpu()
     # assert torch.equal(image1, image2), "Image should always be the same"
 
-    agent: Agent = AttentionPPOThresholdAgent(
+    agent: Agent = AttentionDDPGThresholdAgent(
+        action_spec=env.action_spec,
         **config_dict["agent"]["kwargs"],
     )
 
@@ -80,12 +81,12 @@ def main():
         return td
 
     # Debug manually
-    # td = env.reset()
-    # td = agent.policy(td)
-    # td = env.step(td)
-    # td = td["next"]
-    # td = agent.policy(td)
-    # td = env.step(td)
+    td = env.reset()
+    td = agent.policy(td)
+    td = env.step(td)
+    td = td["next"]
+    td = agent.policy(td)
+    td = env.step(td)
 
     keys_to_exclude = [
         "bbox",
@@ -116,10 +117,10 @@ def main():
         agent.policy,
         frames_per_batch=1,
         total_frames=config.total_frames,
-        storing_device="cpu",  # Since we do logging anyways
-        env_device=config.env.device,
-        policy_device=config.agent.device,
-        trust_policy=True,
+        # storing_device="cpu",  # Since we do logging anyways
+        # env_device=env.device,
+        # policy_device=agent.device,
+        # trust_policy=True,
         postproc=ExcludeTransform(*keys_to_exclude),
     )
 
@@ -134,7 +135,7 @@ def main():
             # Agent and batch dimension are collapsed
             td = td.reshape(-1, *td.shape[2:])
 
-            loss, grad_norm = agent.process_batch(td.to(config.agent.device))
+            loss_info = agent.process_batch(td.to(agent.device))
 
             # Log network parameter norm
             wandb.log(
@@ -142,15 +143,8 @@ def main():
                     "reward": td["next", "reward"].item(),
                     "threshold": td["threshold"].item(),
                     "step": td["step"].item(),
-                    "loss": loss,
-                    "grad_norm": grad_norm,
-                    "prompt_embeddings norm": (
-                        td["padded_prompt_embeddings"] * td["prompt_embedding_attention_mask"].unsqueeze(-1)
-                    )
-                    .nan_to_num(0.0)
-                    .norm()
-                    .item(),
-                    **agent.get_info(),
+                    **loss_info,
+                    **agent.get_train_info(),
                 }
             )
 

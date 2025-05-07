@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+
 import torch.nn.functional as F
 from tensordict.nn import (
     ProbabilisticTensorDictSequential,
@@ -55,13 +56,14 @@ class AttentionPPOThresholdAgent(PPOAgent):
         )
 
     def post_init_hook(self) -> None:
+        pass
 
-        def optim_normalize_hook(optimizer, *args, **kwargs):
-            for module in self.backbone.modules():
-                if hasattr(module, "normalize_weights"):
-                    module.normalize_weights()
+        # def optim_normalize_hook(optimizer, *args, **kwargs):
+        #     for module in self.backbone.modules():
+        #         if hasattr(module, "normalize_weights"):
+        #             module.normalize_weights()
 
-        self.optim.register_step_post_hook(optim_normalize_hook)
+        # self.optimizer.register_step_post_hook(optim_normalize_hook)
 
     def get_policy_module(self) -> ProbabilisticTensorDictSequential:
         # Define the actor network
