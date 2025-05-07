@@ -1,11 +1,10 @@
 import argparse
 import os
-from os.path import expandvars
 from pathlib import Path
 
 import torch
+from torchrl_agents import Agent
 import yaml
-from dotenv import load_dotenv
 from monai.transforms.croppad.array import CropForeground
 from tensordict import TensorDictBase
 from torchrl.collectors import SyncDataCollector
@@ -15,17 +14,13 @@ from tqdm import tqdm
 import wandb
 from src.dataset.npz_dataset import NPZDataset
 from src.model.build_ahus_model import model_registry
-from src.rl.agents import ThresholdAgent
-from src.rl.agents.registry import THRESHOLD_AGENT_REGISTRY
+from src.rl.agents.registry import AttentionPPOThresholdAgent
 from src.rl.mdp_env import get_env
 from src.rl.utils import dict_to_namespace
 
 print("CUDA_VISIBLE_DEVICES =", os.environ.get("CUDA_VISIBLE_DEVICES"))
 print("torch.cuda.is_available() =", torch.cuda.is_available())
 print("torch.cuda.device_count() =", torch.cuda.device_count())
-
-
-load_dotenv()
 
 
 def main():
@@ -74,10 +69,7 @@ def main():
     # image2 = env.reset()["image"].cpu()
     # assert torch.equal(image1, image2), "Image should always be the same"
 
-    # Static type is ThresholdAgent, dynamic type is chosen by config
-    agent_cls = THRESHOLD_AGENT_REGISTRY[config.agent.type]
-    agent: ThresholdAgent = agent_cls(
-        device=config.agent.device,
+    agent: Agent = AttentionPPOThresholdAgent(
         **config_dict["agent"]["kwargs"],
     )
 
@@ -88,12 +80,12 @@ def main():
         return td
 
     # Debug manually
-    td = env.reset()
-    td = agent.policy(td)
-    td = env.step(td)
-    td = td["next"]
-    td = agent.policy(td)
-    td = env.step(td)
+    # td = env.reset()
+    # td = agent.policy(td)
+    # td = env.step(td)
+    # td = td["next"]
+    # td = agent.policy(td)
+    # td = env.step(td)
 
     keys_to_exclude = [
         "bbox",
