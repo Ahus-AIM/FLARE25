@@ -7,14 +7,15 @@ ahus_model:
   weights_path: "weights/rope_mixed_120_accum/model_latest.pth"
 env:
   device: "cpu"
-total_frames: 10000
+total_frames: 100000
 eval_every_n_batches: 100
 eval_max_steps: 10
 dataset:
   # size_threshold: 16777216 # 256^3
   # size_threshold: 2097152 # 128^3
   size_threshold: 4194304 # 256*128*128
-  base_dir: "data/CVPR-BiomedSegFM/3D_val_combined_single"
+  # size_threshold: 262144 # 64*64*64
+  base_dir: "data/CVPR-BiomedSegFM/3D_val_combined_curated"
 agent:
   kwargs:
     _device: "cpu"
@@ -25,7 +26,7 @@ agent:
     entropy_coef: 0.01
     critic_coef: 1
     loss_critic_type: "smooth_l1"
-    lr: 0.001
+    lr: 0.0001
     max_grad_norm: 10
     batch_size: 1
     sub_batch_size: 1

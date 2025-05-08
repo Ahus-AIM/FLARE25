@@ -55,13 +55,19 @@ def main(args: argparse.Namespace) -> None:
         label_dtype=torch.long,
     )
 
-    env = get_env(
+    train_env = get_env(
         ahus_model=ahus_model,
         ahus_model_device=config.ahus_model.device,
         env_device=config.env.device,
         dataset=dataset,
     )
-    check_env_specs(env)
+    eval_env = get_env(
+        ahus_model=ahus_model,
+        ahus_model_device=config.ahus_model.device,
+        env_device=config.env.device,
+        dataset=dataset,
+    )
+    check_env_specs(train_env)
 
     # Get image, should always be the same
     # image1 = env.reset()["image"].cpu()
@@ -74,7 +80,7 @@ def main(args: argparse.Namespace) -> None:
     # )
 
     agent: Agent = AttentionPPOThresholdAgent(
-        action_spec=env.action_spec,
+        action_spec=train_env.action_spec,
         **config_dict["agent"]["kwargs"],
     )
 
@@ -85,12 +91,12 @@ def main(args: argparse.Namespace) -> None:
         return td
 
     # Debug manually
-    td = env.reset()
+    td = train_env.reset()
     td = agent.policy(td)
-    td = env.step(td)
+    td = train_env.step(td)
     td = td["next"]
     td = agent.policy(td)
-    td = env.step(td)
+    td = train_env.step(td)
 
     keys_to_exclude = [
         "bbox",
@@ -117,7 +123,7 @@ def main(args: argparse.Namespace) -> None:
         ("next", "true_segmentation"),
     ]
     collector = SyncDataCollector(
-        env,
+        train_env,
         agent.policy,
         frames_per_batch=1,
         total_frames=config.total_frames,
@@ -128,7 +134,7 @@ def main(args: argparse.Namespace) -> None:
         postproc=ExcludeTransform(*keys_to_exclude),
     )
 
-    wandb.init(
+    run = wandb.init(
         entity=config.wandb.entity,
         project=config.wandb.project,
         config=config_dict,
@@ -142,7 +148,7 @@ def main(args: argparse.Namespace) -> None:
             loss_info = agent.process_batch(td.to(agent.device))
 
             # Log network parameter norm
-            wandb.log(
+            run.log(
                 {
                     f"train/{k}": v
                     for k, v in (
@@ -164,19 +170,19 @@ def main(args: argparse.Namespace) -> None:
                     torch.no_grad(),
                     set_exploration_type(ExplorationType.DETERMINISTIC),
                 ):
-                    eval_td = env.rollout(
+                    eval_td = eval_env.rollout(
                         max_steps=config.eval_max_steps, policy=agent.policy
                     )
-                    baseline_td = env.rollout(
-                        max_steps=config.eval_max_steps, policy=baseline_policy
-                    )
+                    # baseline_td = train_env.rollout(
+                    #     max_steps=config.eval_max_steps, policy=baseline_policy
+                    # )
 
                     # Move to cpu for logging
                     eval_td = eval_td.to("cpu")
-                    baseline_td = baseline_td.to("cpu")
+                    # baseline_td = baseline_td.to("cpu")
 
                     # Log evaluation results
-                    wandb.log(
+                    run.log(
                         {
                             f"eval/{k}": v
                             for k, v in (
@@ -187,12 +193,12 @@ def main(args: argparse.Namespace) -> None:
                                     "threshold": eval_td["threshold"]
                                     .mean()
                                     .item(),
-                                    "baseline reward sum": baseline_td["next", "reward"]
-                                    .sum()
-                                    .item(),
-                                    "baseline threshold": baseline_td["threshold"]
-                                    .mean()
-                                    .item(),
+                                    # "baseline reward sum": baseline_td["next", "reward"]
+                                    # .sum()
+                                    # .item(),
+                                    # "baseline threshold": baseline_td["threshold"]
+                                    # .mean()
+                                    # .item(),
                                 } | agent.get_eval_info()
                             ).items()
                         }
@@ -205,7 +211,7 @@ def main(args: argparse.Namespace) -> None:
     Path(config.agent.save_path).parent.mkdir(parents=True, exist_ok=True)
     agent.save(Path(config.agent.save_path))
     print("done.")
-    wandb.finish()
+    run.finish()
 
 
 if __name__ == "__main__":

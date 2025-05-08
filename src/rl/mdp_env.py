@@ -438,7 +438,7 @@ def get_env(ahus_model: AhusModel, ahus_model_device: torch.device, env_device: 
         #     batch_size=1,
         #     shuffle=True,
         # ),
-        dataset_iter=single_sample_loader(
+        dataset_iter=infinite_loader(
             dataset,
         ),
         device=env_device,
