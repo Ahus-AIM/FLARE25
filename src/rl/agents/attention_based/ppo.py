@@ -54,10 +54,17 @@ class AttentionPPOThresholdAgent(PPOAgent):
     backbone_out_size: int = serializable()
 
     def pre_init_hook(self) -> None:
-        self.backbone_net = DummyBackbone(
-            input_size=self.prompt_embedding_dim,
+        # self.backbone_net = DummyBackbone(
+        #     input_size=self.prompt_embedding_dim,
+        #     output_size=self.backbone_out_size,
+        # )
+        self.backbone_net = PromptAttentionNet(
+            num_layers=2,
+            emb_dim=self.prompt_embedding_dim,
+            num_heads=4,
             output_size=self.backbone_out_size,
         )
+
         self.backbone = TensorDictModule(
             self.backbone_net,
             # PromptAttentionNet(
@@ -107,35 +114,20 @@ class AttentionPPOThresholdAgent(PPOAgent):
         )
 
     def post_init_hook(self) -> None:
-        pass
 
-        # def optim_normalize_hook(optimizer, *args, **kwargs):
-        #     for module in self.backbone.modules():
-        #         if hasattr(module, "normalize_weights"):
-        #             module.normalize_weights()
+        def optim_normalize_hook(optimizer, *args, **kwargs):
+            for module in self.backbone.modules():
+                if hasattr(module, "normalize_weights"):
+                    module.normalize_weights()
 
-        # self.optimizer.register_step_post_hook(optim_normalize_hook)
+        self.optimizer.register_step_post_hook(optim_normalize_hook)
 
     def get_policy_module(self) -> ProbabilisticTensorDictSequential:
         # Define the actor network
 
-        # return ProbabilisticTensorDictSequential(
-        #     [
-        #         self.actor_value,
-        #         self.actor_head
-        #     ]
-        # )
         return self.actor_value.get_policy_operator()
 
     def get_state_value_module(self) -> TensorDictModule:
-        # value_module = TensorDictSequential(
-        #     [
-        #         self.backbone,
-        #         value_head
-        #     ]
-        # )
-
-        # return self.value_head
         return self.actor_value.get_value_operator()
 
     def get_eval_info(self) -> dict[str, Any]:

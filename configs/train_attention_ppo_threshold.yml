@@ -22,10 +22,10 @@ agent:
     lmbda: 0.0
     clip_epsilon: 0.2
     entropy_bonus: true
-    entropy_coef: 0.1
+    entropy_coef: 0.01
     critic_coef: 1
     loss_critic_type: "smooth_l1"
-    lr: 0.00001
+    lr: 0.001
     max_grad_norm: 10
     batch_size: 1
     sub_batch_size: 1
