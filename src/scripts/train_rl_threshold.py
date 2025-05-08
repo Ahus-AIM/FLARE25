@@ -7,28 +7,25 @@ import yaml
 from monai.transforms.croppad.array import CropForeground
 from tensordict import TensorDictBase
 from torchrl.collectors import SyncDataCollector
-from torchrl.envs import ExcludeTransform, ExplorationType, check_env_specs, set_exploration_type
-from torchrl_agents import Agent
+from torchrl.envs import (
+    ExcludeTransform,
+    ExplorationType,
+    check_env_specs,
+    set_exploration_type,
+)
 from tqdm import tqdm
 
 import wandb
+from src.rl.agents import Agent
+from src.rl.agents.attention_based.ppo import AttentionPPOThresholdAgent
 from src.dataset.npz_dataset import NPZDataset
 from src.model.build_ahus_model import model_registry
 from src.rl.agents.attention_based.ddpg import AttentionDDPGThresholdAgent
 from src.rl.mdp_env import get_env
 from src.rl.utils import dict_to_namespace
 
-print("CUDA_VISIBLE_DEVICES =", os.environ.get("CUDA_VISIBLE_DEVICES"))
-print("torch.cuda.is_available() =", torch.cuda.is_available())
-print("torch.cuda.device_count() =", torch.cuda.device_count())
 
-
-def main():
-    # Use argparse to choose config file
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True)
-    args = parser.parse_args()
-
+def main(args: argparse.Namespace) -> None:
     # Load config from yaml file
     with open(args.config, "r") as file:
         config_dict: dict = yaml.safe_load(file)
@@ -51,7 +48,9 @@ def main():
     dataset = NPZDataset(
         base_dir=config.dataset.base_dir,
         size_threshold=config.dataset.size_threshold,
-        transform=CropForeground(select_fn=lambda x: x > 0, k_divisible=8, allow_smaller=True),
+        transform=CropForeground(
+            select_fn=lambda x: x > 0, k_divisible=8, allow_smaller=True
+        ),
         data_suffix="npz",
         label_dtype=torch.long,
     )
@@ -69,7 +68,12 @@ def main():
     # image2 = env.reset()["image"].cpu()
     # assert torch.equal(image1, image2), "Image should always be the same"
 
-    agent: Agent = AttentionDDPGThresholdAgent(
+    # agent: Agent = AttentionDDPGThresholdAgent(
+    #     action_spec=env.action_spec,
+    #     **config_dict["agent"]["kwargs"],
+    # )
+
+    agent: Agent = AttentionPPOThresholdAgent(
         action_spec=env.action_spec,
         **config_dict["agent"]["kwargs"],
     )
@@ -140,22 +144,32 @@ def main():
             # Log network parameter norm
             wandb.log(
                 {
-                    "reward": td["next", "reward"].item(),
-                    "threshold": td["threshold"].item(),
-                    "step": td["step"].item(),
-                    **loss_info,
-                    **agent.get_train_info(),
+                    f"train/{k}": v
+                    for k, v in (
+                        {
+                            "reward": td["next", "reward"].item(),
+                            "threshold": td["threshold"].item(),
+                            "step": td["step"].item(),
+                        }
+                        | loss_info
+                        | agent.get_train_info()
+                    ).items()
                 }
             )
 
             if batch_idx % config.eval_every_n_batches == 0:
+                tqdm.write("Evaluating...")
                 # Evaluate the model
                 with (
                     torch.no_grad(),
                     set_exploration_type(ExplorationType.DETERMINISTIC),
                 ):
-                    eval_td = env.rollout(max_steps=config.eval_max_steps, policy=agent.policy)
-                    baseline_td = env.rollout(max_steps=config.eval_max_steps, policy=baseline_policy)
+                    eval_td = env.rollout(
+                        max_steps=config.eval_max_steps, policy=agent.policy
+                    )
+                    baseline_td = env.rollout(
+                        max_steps=config.eval_max_steps, policy=baseline_policy
+                    )
 
                     # Move to cpu for logging
                     eval_td = eval_td.to("cpu")
@@ -164,10 +178,23 @@ def main():
                     # Log evaluation results
                     wandb.log(
                         {
-                            "eval reward": eval_td["next", "reward"].mean().item(),
-                            "eval threshold": eval_td["threshold"].mean().item(),
-                            "baseline reward": baseline_td["next", "reward"].mean().item(),
-                            "baseline threshold": baseline_td["threshold"].mean().item(),
+                            f"eval/{k}": v
+                            for k, v in (
+                                {
+                                    "reward sum": eval_td["next", "reward"]
+                                    .sum()
+                                    .item(),
+                                    "threshold": eval_td["threshold"]
+                                    .mean()
+                                    .item(),
+                                    "baseline reward sum": baseline_td["next", "reward"]
+                                    .sum()
+                                    .item(),
+                                    "baseline threshold": baseline_td["threshold"]
+                                    .mean()
+                                    .item(),
+                                } | agent.get_eval_info()
+                            ).items()
                         }
                     )
     except KeyboardInterrupt:
@@ -182,4 +209,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/train_attention_ppo_threshold.yml",
+        help="Path to the config file",
+    )
+    args = parser.parse_args()
+
+    main(args)

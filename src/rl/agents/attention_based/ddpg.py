@@ -3,9 +3,8 @@ from dataclasses import dataclass
 import torch
 from tensordict.nn import TensorDictModule, TensorDictSequential
 from torch import nn
-from torchrl_agents import serializable
-from torchrl_agents.ddpg import DDPGAgent
 
+from src.rl.agents import DDPGAgent, serializable
 from src.rl.models import PromptAttentionNet
 
 

@@ -404,7 +404,8 @@ def get_reward_fn() -> RewardFn:
             spacing=torch.ones(seg.shape[0], 3, dtype=torch.float32),
             tolerance=2.0,
         )
-        return (dsc_tensor + nsd_tensor).unsqueeze(-1)
+        # ~normalized to 0 mean
+        return (dsc_tensor + nsd_tensor).unsqueeze(-1) - 1.5
 
     return reward_fn
 

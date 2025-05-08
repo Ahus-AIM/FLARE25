@@ -7,8 +7,8 @@ ahus_model:
   weights_path: "weights/rope_mixed_120_accum/model_latest.pth"
 env:
   device: "cpu"
-total_frames: 1000
-eval_every_n_batches: 20
+total_frames: 10000
+eval_every_n_batches: 100
 eval_max_steps: 10
 dataset:
   # size_threshold: 16777216 # 256^3
@@ -19,13 +19,13 @@ agent:
   kwargs:
     _device: "cpu"
     gamma: 0.99
-    lmbda: 0.95
+    lmbda: 0.0
     clip_epsilon: 0.2
     entropy_bonus: true
-    entropy_coef: 0.0001
+    entropy_coef: 0.1
     critic_coef: 1
     loss_critic_type: "smooth_l1"
-    lr: 0.0001
+    lr: 0.00001
     max_grad_norm: 10
     batch_size: 1
     sub_batch_size: 1
