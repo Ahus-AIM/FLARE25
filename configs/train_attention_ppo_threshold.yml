@@ -6,8 +6,8 @@ ahus_model:
   type: "ahus_model_rope_mixed"
   weights_path: "weights/rope_mixed_120_accum/model_latest.pth"
 env:
-  device: "cpu"
-total_frames: 100000
+  device: "cuda"
+total_frames: 30000
 eval_every_n_batches: 100
 eval_max_steps: 10
 dataset:
@@ -23,7 +23,7 @@ agent:
     lmbda: 0.0
     clip_epsilon: 0.2
     entropy_bonus: true
-    entropy_coef: 0.01
+    entropy_coef: 0.1
     critic_coef: 1
     loss_critic_type: "smooth_l1"
     lr: 0.0001

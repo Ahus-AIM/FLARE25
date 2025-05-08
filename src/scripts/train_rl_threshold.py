@@ -91,12 +91,12 @@ def main(args: argparse.Namespace) -> None:
         return td
 
     # Debug manually
-    td = train_env.reset()
-    td = agent.policy(td)
-    td = train_env.step(td)
-    td = td["next"]
-    td = agent.policy(td)
-    td = train_env.step(td)
+    # td = train_env.reset()
+    # td = agent.policy(td.to(agent.device)).to(train_env.device)
+    # td = train_env.step(td)
+    # td = td["next"]
+    # td = agent.policy(td)
+    # td = train_env.step(td)
 
     keys_to_exclude = [
         "bbox",
@@ -127,9 +127,9 @@ def main(args: argparse.Namespace) -> None:
         agent.policy,
         frames_per_batch=1,
         total_frames=config.total_frames,
-        # storing_device="cpu",  # Since we do logging anyways
-        # env_device=env.device,
-        # policy_device=agent.device,
+        storing_device="cpu",  # Since we do logging anyways
+        env_device=train_env.device,
+        policy_device=agent.device,
         # trust_policy=True,
         postproc=ExcludeTransform(*keys_to_exclude),
     )
@@ -171,7 +171,7 @@ def main(args: argparse.Namespace) -> None:
                     set_exploration_type(ExplorationType.DETERMINISTIC),
                 ):
                     eval_td = eval_env.rollout(
-                        max_steps=config.eval_max_steps, policy=agent.policy
+                        max_steps=config.eval_max_steps, policy=agent.policy, auto_cast_to_device=True
                     )
                     # baseline_td = train_env.rollout(
                     #     max_steps=config.eval_max_steps, policy=baseline_policy
