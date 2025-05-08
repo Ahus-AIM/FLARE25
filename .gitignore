@@ -1,9 +1,9 @@
-data/*
+data
 ckpt/*
 results/*
 work_dir/*
 example_imgs/*
-weights/*
+weights
 */__pycache__/*
 __pycache__/*
 *.pyc
@@ -180,10 +180,3 @@ cython_debug/
 
 # WandB logs
 wandb/
-
-# Everything slurm related
-slurm*
-
-data
-
-weights

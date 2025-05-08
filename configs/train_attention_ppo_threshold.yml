@@ -18,7 +18,7 @@ dataset:
   base_dir: "data/CVPR-BiomedSegFM/3D_val_combined_curated"
 agent:
   kwargs:
-    _device: "cpu"
+    _device: "cuda"
     gamma: 0.99
     lmbda: 0.0
     clip_epsilon: 0.2
