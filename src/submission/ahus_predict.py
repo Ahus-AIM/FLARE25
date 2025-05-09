@@ -522,7 +522,7 @@ if __name__ == "__main__":
         default="cuda",
         help="Which device to run the segmenter on.",
     )
-    parser.add_argument("--size_threshold", type=int, default=256*128*128, help="Size of the input image.")
+    parser.add_argument("--size_threshold", type=int, default=256 * 128 * 128, help="Size of the input image.")
     parser.add_argument(
         "--n_clicks", type=int, default=5, help="How many steps the inference is assumed to be used for."
     )

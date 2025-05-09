@@ -117,6 +117,7 @@ a mandatory input.
 import os
 import subprocess
 
+from coolname import generate_slug
 from tqdm import tqdm
 
 from src.submission.segmentation import segmenter_registry
@@ -124,9 +125,9 @@ from src.submission.segmentation import segmenter_registry
 join = os.path.join
 import argparse
 import shutil
-from pathlib import Path
 import time
 from collections import OrderedDict
+from pathlib import Path
 
 import cc3d
 import numpy as np
@@ -165,10 +166,8 @@ def compute_multi_class_nsd(
         nsd.append(compute_surface_dice_at_tolerance(surface_distance, tolerance))
     return np.mean(nsd)
 
-def clear_dir(p: Path) -> None:
-    if not p.exists() and not p.is_symlink():
-        return  # Nothing to do
 
+def create_empty_dir(p: Path) -> None:
     if p.is_symlink():
         p.unlink()  # Remove the symlink only
     elif p.is_dir():
@@ -235,13 +234,12 @@ parser.add_argument(
     default="cuda",
     help="Which device to run the segmenter on.",
 )
-parser.add_argument("--size_threshold", type=int, default=256*128*128, help="Size of the input image.")
+parser.add_argument("--size_threshold", type=int, default=256 * 128 * 128, help="Size of the input image.")
 
 
 args = parser.parse_args()
 
 test_img_path = args.test_img_path
-save_path = args.save_path
 validation_gts_path = args.validation_gts_path
 verbose = args.verbose
 model_type = args.model_type
@@ -252,8 +250,9 @@ segmenter_checkpoint = args.segmenter_checkpoint
 segmenter_device = args.segmenter_device
 size_threshold = args.size_threshold
 
-input_temp = "./inputs/"
-output_temp = "./outputs"
+# Since we will write to this temporary directories and we may have several processes running in parallel, we need to make sure that the directories are unique
+slug = generate_slug(2)
+save_path = os.path.join(args.save_path, slug)
 os.makedirs(save_path, exist_ok=True)
 
 # dockers = sorted(os.listdir(docker_path))
@@ -261,15 +260,17 @@ test_cases = sorted(os.listdir(test_img_path))
 test_cases = [case for case in test_cases if "resampled" not in case]
 
 # create temp folers for inference one-by-one
-clear_dir(Path(input_temp))
-clear_dir(Path(output_temp))
+input_temp = f"./inputs/{slug}"
+output_temp = f"./outputs/{slug}"
+create_empty_dir(Path(input_temp))
+create_empty_dir(Path(output_temp))
 
 # load docker and create a new folder to save segmentation results
 # teamname = docker.split(".")[0].lower()
 # print("teamname docker: ", docker)
 teamname = "ahus"
 # os.system("docker image load -i {}".format(join(docker_path, docker)))
-team_outpath = join(save_path, teamname)
+team_outpath = join(save_path, slug)
 if os.path.exists(team_outpath):
     shutil.rmtree(team_outpath)
 os.makedirs(team_outpath)
@@ -382,7 +383,6 @@ for case in tqdm(test_cases):
                     if torch.cuda.is_available():  # GPU available
                         import cupy as cp
                         from cucim.core.operations import morphology
-from pathlib import Path
 
                         error_mask_cp = cp.array(cropped_mask)
                         edt_cp = morphology.distance_transform_edt(error_mask_cp)
