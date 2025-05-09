@@ -1,5 +1,4 @@
 from collections.abc import Callable
-from typing import TypedDict
 
 import torch
 from jaxtyping import Bool, Float, Integer
@@ -29,11 +28,13 @@ PromptEmbeddings = Float[Tensor, "n_points prompt_embedding_size"]
 Box = Float[Tensor, f"{size_to_str(SINGLE_BOX_SHAPE)}"]
 PointCoord = Float[Tensor, f"{size_to_str(POINT_COORD_SHAPE)}"]
 PointCoords = Float[Tensor, f"n_points {size_to_str(POINT_COORD_SHAPE)}"]
+MulticlassPointCoords = Float[Tensor, f"n_instances n_points {size_to_str(POINT_COORD_SHAPE)}"]
 PointLabel = Integer[Tensor, f"{size_to_str(POINT_LABEL_SHAPE)}"]
 PointLabels = Integer[Tensor, f"n_points {size_to_str(POINT_LABEL_SHAPE)}"]
+MulticlassPointLabels = Integer[Tensor, f"n_instances n_points {size_to_str(POINT_LABEL_SHAPE)}"]
 Step = Integer[Tensor, f"{size_to_str(STEP_SHAPE)}"]
 Reward = Float[Tensor, f"{size_to_str(REWARD_SHAPE)}"]
-MulticlassBoxes = Float[Tensor, f"n_instances {size_to_str(SINGLE_BOX_SHAPE)}"]
+Boxes = Float[Tensor, f"n_instances {size_to_str(SINGLE_BOX_SHAPE)}"]
 
 # An image embedder function returns a list of image embeddings, due to the unet nature of the model
 ImageEmbedderFn = Callable[[Image], list[ImageEmbedding]]
@@ -60,7 +61,7 @@ PostProcessingFn = Callable[
 # Interaction applies to a single instance
 InteractionFn = Callable[
     [
-        Segmentation,  # predictied segmentation
+        Segmentation,  # predicted segmentation
         Segmentation,  # true segmentation
     ],
     tuple[PointCoord, PointLabel],  # new point and label
@@ -72,6 +73,7 @@ RewardFn = Callable[
         MulticlassSegmentation,  # predicted segmentation
         MulticlassSegmentation,  # true segmentation
         Step,
+        Tensor,  # spacing
     ],
     Reward,
 ]
@@ -95,3 +97,5 @@ BatchedPointCoords = Float[Tensor, f"batch n_points {size_to_str(POINT_COORD_SHA
 BatchedPointLabel = Integer[Tensor, f"batch {size_to_str(POINT_LABEL_SHAPE)}"]
 BatchedPointLabels = Integer[Tensor, f"batch n_points {size_to_str(POINT_LABEL_SHAPE)}"]
 BatchedMulticlassBoxes = Float[Tensor, f"batch n_instances {size_to_str(SINGLE_BOX_SHAPE)}"]
+
+BatchedChannelImage = Float[Tensor, "batch 1 image_depth image_height image_width"]
