@@ -13,7 +13,7 @@ RUN python3 -m pip install -r requirements.txt
 
 COPY src/ /ahus/src/
 COPY src/submission/ahus_predict.py /ahus/
-COPY submission_files/liere_2_may.pth /workspace/weights.pth
+COPY submission_files/rope_mixed_8_may_latest.pth /workspace/weights.pth
 COPY src/submission/predict.sh /ahus/
 
 CMD ["sleep", "infinity"]
