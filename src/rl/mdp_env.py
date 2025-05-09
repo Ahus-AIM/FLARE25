@@ -194,7 +194,7 @@ class InteractiveSegmentationEnv(EnvBase):
             data_td["boxes"],
         )
         # The number of instances is how many boxes we have
-        n_instances = boxes.shape
+        n_instances = boxes.shape[0]
 
         # Move all data to the device
         image = image.to(tensordict.device)

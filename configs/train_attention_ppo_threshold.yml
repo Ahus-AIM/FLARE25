@@ -13,9 +13,12 @@ eval_max_steps: 10
 dataset:
   # size_threshold: 16777216 # 256^3
   # size_threshold: 2097152 # 128^3
-  size_threshold: 4194304 # 256*128*128
+  # size_threshold: 4194304 # 256*128*128
   # size_threshold: 262144 # 64*64*64
-  base_dir: "data/CVPR-BiomedSegFM/3D_val_combined_curated"
+  # base_dir: "data/CVPR-BiomedSegFM/3D_val_combined_curated"
+  # data_dir: "data/CVPR-BiomedSegFM/3D_val_combined_curated"
+  data_dir: "data/CVPR-BiomedSegFM/3D_val_combined_single"
+# dataset
 agent:
   kwargs:
     _device: "cuda"

@@ -138,14 +138,9 @@ from scipy import integrate
 from scipy.ndimage import distance_transform_edt
 
 from src.utils.surface_dice import (
-    compute_dice_coefficient,
-    compute_surface_dice_at_tolerance,
-    compute_surface_distances,
     compute_multi_class_dsc,
     compute_multi_class_nsd,
 )
-
-
 
 
 def create_empty_dir(p: Path) -> None:

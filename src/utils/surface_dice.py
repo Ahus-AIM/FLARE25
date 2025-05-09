@@ -3,7 +3,6 @@
 import numpy as np
 import scipy.ndimage  # type: ignore
 from jaxtyping import Integer
-from numpy.typing import floating
 
 # neighbour_code_to_normals is a lookup table.
 # For every binary neighbour code
