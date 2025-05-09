@@ -6,7 +6,7 @@ from src.custom_types import (
     BatchedPointLabels,
     BatchedPromptEmbeddings,
 )
-from src.model.modeling import AhusModel
+from src.model.modeling.ahus_model import AhusModel
 
 
 def decoder_forward(
