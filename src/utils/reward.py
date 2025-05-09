@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from scipy.integrate import cumulative_trapezoid
 
-from src.custom_types import Segmentation
+from src.custom_types import MulticlassSegmentation, Segmentation
 from src.utils.surface_dice import (
     compute_dice_coefficient,
     compute_surface_dice_at_tolerance,
@@ -32,7 +32,7 @@ def compute_multi_class_nsd(
 
 
 def compute_multi_class_dsc_nsd(
-    gt: torch.Tensor, seg: torch.Tensor, spacing: torch.Tensor, tolerance: float = 2.0
+    gt: MulticlassSegmentation, seg: MulticlassSegmentation, spacing: torch.Tensor, tolerance: float = 2.0
 ) -> tuple[torch.Tensor, torch.Tensor]:
     assert gt.shape == seg.shape, "Input tensors must have the same shape"
     assert gt.ndim == 4, "Expected input shape (1, H, W, D)"
