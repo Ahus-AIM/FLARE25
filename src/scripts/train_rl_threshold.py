@@ -3,20 +3,18 @@ from pathlib import Path
 
 import torch
 import yaml
-from monai.transforms.croppad.array import CropForeground
 from tensordict import TensorDictBase
 from torchrl.collectors import SyncDataCollector
-from torchrl.envs import (
+from torchrl.envs import (  # check_env_specs,
     ExcludeTransform,
     ExplorationType,
-    check_env_specs,
     set_exploration_type,
 )
 from tqdm import tqdm
 
 import wandb
 from src.dataset.multiclass_npz_dataset import get_tensordict_iterator
-from src.model.build_ahus_model import model_registry
+from src.model.registry import model_registry
 from src.rl.agents import Agent
 from src.rl.agents.attention_based.ppo import AttentionPPOThresholdAgent
 from src.rl.mdp_env import get_env
@@ -43,22 +41,29 @@ def main(args: argparse.Namespace) -> None:
     ahus_model.eval()
     ahus_model.requires_grad_(False)
 
-    td_iterator = get_tensordict_iterator(data_dir=Path(config.dataset.data_dir))
+    # td_iterator = get_tensordict_iterator(data_dir=Path(config.dataset.data_dir))
 
     train_env = get_env(
         ahus_model=ahus_model,
         ahus_model_device=config.ahus_model.device,
         env_device=config.env.device,
-        td_iterator_factory=lambda: get_tensordict_iterator(data_dir=Path(config.dataset.data_dir)),
+        td_iterator_factory=lambda: get_tensordict_iterator(
+            val_dir=Path(config.dataset.val_dir), val_gt_dir=Path(config.dataset.val_gt_dir)
+        ),
     )
     eval_env = get_env(
         ahus_model=ahus_model,
         ahus_model_device=config.ahus_model.device,
         env_device=config.env.device,
-        td_iterator_factory=lambda: get_tensordict_iterator(data_dir=Path(config.dataset.data_dir)),
+        td_iterator_factory=lambda: get_tensordict_iterator(
+            val_dir=Path(config.dataset.val_dir), val_gt_dir=Path(config.dataset.val_gt_dir)
+        ),
     )
 
+    # Debug env manually
     td = train_env.reset()
+    td = train_env.rand_step(td)
+    td = td["next"]
     td = train_env.rand_step(td)
     # check_env_specs(train_env)
 
@@ -91,29 +96,24 @@ def main(args: argparse.Namespace) -> None:
     # td = agent.policy(td)
     # td = train_env.step(td)
 
-    keys_to_exclude = [
-        "bbox",
-        "collector",
+    env_keys_to_exclude = [
         "image",
         "image_embedding1",
         "image_embedding2",
         "image_embedding3",
         "image_embedding4",
-        "mask",
-        "point_coords",
-        "point_labels",
-        "true_segmentation",
-        # next
-        ("next", "bbox"),
-        ("next", "image"),
-        ("next", "image_embedding1"),
-        ("next", "image_embedding2"),
-        ("next", "image_embedding3"),
-        ("next", "image_embedding4"),
-        ("next", "mask"),
-        ("next", "point_coords"),
-        ("next", "point_labels"),
-        ("next", "true_segmentation"),
+        "multiclass_padded_prompt_embeddings",
+        "multiclass_prompt_embedding_attention_masks",
+        "boxes",
+        "multiclass_image_logits",
+        "multiclass_point_coords",
+        "multiclass_point_labels",
+        "true_multiclass_segmentation",
+    ]
+    keys_to_exclude = [
+        "collector",
+        *env_keys_to_exclude,
+        *(("next", k) for k in env_keys_to_exclude),
     ]
     collector = SyncDataCollector(
         train_env,
@@ -135,9 +135,6 @@ def main(args: argparse.Namespace) -> None:
 
     try:
         for batch_idx, td in tqdm(enumerate(collector), total=config.total_frames):
-            # Agent and batch dimension are collapsed
-            td = td.reshape(-1, *td.shape[2:])
-
             loss_info = agent.process_batch(td.to(agent.device))
 
             # Log network parameter norm
@@ -147,7 +144,6 @@ def main(args: argparse.Namespace) -> None:
                     for k, v in (
                         {
                             "reward": td["next", "reward"].item(),
-                            "threshold": td["threshold"].item(),
                             "step": td["step"].item(),
                         }
                         | loss_info
@@ -181,13 +177,7 @@ def main(args: argparse.Namespace) -> None:
                             for k, v in (
                                 {
                                     "reward sum": eval_td["next", "reward"].sum().item(),
-                                    "threshold": eval_td["threshold"].mean().item(),
-                                    # "baseline reward sum": baseline_td["next", "reward"]
-                                    # .sum()
-                                    # .item(),
-                                    # "baseline threshold": baseline_td["threshold"]
-                                    # .mean()
-                                    # .item(),
+                                    "logits_to_add": wandb.Histogram(eval_td["logits_to_add"]),
                                 }
                                 | agent.get_eval_info()
                             ).items()
