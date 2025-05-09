@@ -23,6 +23,9 @@ from src.utils.decode import decoder_forward
 
 torch.set_grad_enabled(False)
 
+# This import is needed for Agent.load to recognize subclasses
+from src.rl.agents.attention_based.ppo import AttentionPPOThresholdAgent  # noqa: E402, F401
+
 
 class VolumeTransforms:
     def __init__(self, size_threshold: int) -> None:
@@ -182,7 +185,7 @@ class InferencePipeline:
         # Model device is prioritized over segmenter device for general operations
         self.model_device: str = args.model_device
         self.segmenter_device: str = args.segmenter_device
-        self.n_steps: int = args.n_steps
+        self.n_clicks: int = args.n_clicks
         self.model: torch.nn.Module = self._load_model()
         self.segmenter: Segmenter = self._load_segmenter()
         self.coord_handler: VolumeTransforms = VolumeTransforms(args.size_threshold)
@@ -409,7 +412,7 @@ class InferencePipeline:
         with safe_autocast(device_type=self.segmenter_device.split(":")[0]):
             device = self.segmenter_device
             padded_prompt_embeddings, prompt_embedding_attention_mask = pad_prompt_embeddings(
-                prompt_embeddings, self.n_steps
+                prompt_embeddings, self.n_clicks
             )
             td = TensorDict(
                 {
@@ -521,7 +524,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--size_threshold", type=int, default=128**3, help="Size of the input image.")
     parser.add_argument(
-        "--n_steps", type=int, default=5, help="How many steps the inference is assumed to be used for."
+        "--n_clicks", type=int, default=5, help="How many steps the inference is assumed to be used for."
     )
 
     args: argparse.Namespace = parser.parse_args()

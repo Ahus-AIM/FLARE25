@@ -432,7 +432,7 @@ for case in tqdm(test_cases):
 
         # This command is expected to take (D, H, W) images from one folder and write (D, H, W) segmentations (integer valued) to a different folder
         # BBoxes either need to be present in the npz file as the "boxes" key, or be in a separate file with prefix "boxes_"
-        cmd = f"python3 -m src.submission.ahus_predict --load_path {input_temp} --save_path {output_temp} --model_type {model_type} --model_checkpoint {model_checkpoint} --model_device {model_device} --segmenter_type {segmenter_type} --segmenter_checkpoint {segmenter_checkpoint} --segmenter_device {segmenter_device} --size_threshold {size_threshold}"
+        cmd = f"python3 -m src.submission.ahus_predict --load_path {input_temp} --save_path {output_temp} --model_type {model_type} --model_checkpoint {model_checkpoint} --model_device {model_device} --segmenter_type {segmenter_type} --segmenter_checkpoint {segmenter_checkpoint} --segmenter_device {segmenter_device} --size_threshold {size_threshold} --n_clicks {n_clicks}"
 
         start_time = time.time()
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
