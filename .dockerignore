@@ -4,3 +4,5 @@
 # Allow only required files and directories
 !src/submission/
 !src/model/
+!src/
+!submission_files/
