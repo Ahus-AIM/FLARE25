@@ -3,8 +3,12 @@ import torch
 from cucim.core.operations import morphology
 from scipy.ndimage import distance_transform_edt
 
+from src.custom_types import BatchedChannelSegmentation, BatchedPointCoords, BatchedPointLabels
 
-def interact(prediction: torch.Tensor, gt_semantic_seg: torch.Tensor) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+
+def interact(
+    prediction: BatchedChannelSegmentation, gt_semantic_seg: BatchedChannelSegmentation
+) -> tuple[list[BatchedPointCoords], list[BatchedPointLabels]]:
     """
     Get clicks using the same method as in challenge evaluation.
 

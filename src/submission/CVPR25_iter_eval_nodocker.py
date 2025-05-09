@@ -117,7 +117,6 @@ a mandatory input.
 import os
 import subprocess
 
-from coolname import generate_slug
 from tqdm import tqdm
 
 from src.submission.segmentation import segmenter_registry
@@ -133,7 +132,6 @@ import cc3d
 import numpy as np
 import pandas as pd
 import torch
-from jaxtyping import Integer
 from scipy import integrate
 from scipy.ndimage import distance_transform_edt
 
@@ -202,7 +200,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--segmenter_checkpoint",
-    type=str,
+    type=Path,
     required=False,  # Some segmenters do not require a checkpoint
     help="Path to saved segmenter.",
 )

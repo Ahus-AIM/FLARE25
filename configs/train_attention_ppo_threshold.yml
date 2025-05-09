@@ -6,7 +6,7 @@ ahus_model:
   type: "ahus_model_rope_mixed"
   weights_path: "weights/rope_mixed_120_accum/model_latest.pth"
 env:
-  device: "cuda"
+  device: "cpu"
 total_frames: 30000
 eval_every_n_batches: 100
 eval_max_steps: 10
@@ -15,9 +15,8 @@ dataset:
   # size_threshold: 2097152 # 128^3
   # size_threshold: 4194304 # 256*128*128
   # size_threshold: 262144 # 64*64*64
-  # base_dir: "data/CVPR-BiomedSegFM/3D_val_combined_curated"
-  # data_dir: "data/CVPR-BiomedSegFM/3D_val_combined_curated"
-  data_dir: "data/CVPR-BiomedSegFM/3D_val_combined_single"
+  val_dir: "data/CVPR-BiomedSegFM/3D_val_single"
+  val_gt_dir: "data/CVPR-BiomedSegFM/3D_val_gt/3D_val_gt_interactive"
 # dataset
 agent:
   kwargs:

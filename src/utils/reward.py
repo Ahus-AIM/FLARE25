@@ -6,6 +6,7 @@ from src.utils.surface_dice import (
     compute_multi_class_nsd,
 )
 
+
 def compute_multi_class_dsc_nsd(
     gt: MulticlassSegmentation,
     seg: MulticlassSegmentation,

@@ -1,3 +1,53 @@
+import torch
+
+from src.rl.mdp_env import get_post_processing_fn
+
+
+def test_mdp_postprocess_fn():
+    postprocess_fn = get_post_processing_fn()
+
+    image = torch.zeros(3, 3)
+
+    batched_model_logits = torch.tensor(
+        [
+            [
+                [-10, -10, -10],
+                [10, 10, -10],
+                [10, 10, -10],
+            ],
+            [
+                [-10, -10, -10],
+                [-10, 8, 10],
+                [-10, 8, 10],
+            ],
+        ],
+        dtype=torch.float32,
+    )
+    batched_logits_to_add = torch.zeros_like(batched_model_logits)
+
+    expected_multiclass_segmentation = torch.tensor(
+        [
+            [
+                [0, 0, 0],
+                [1, 1, 2],
+                [1, 1, 2],
+            ],
+        ],
+        dtype=torch.uint8,
+    )
+
+    actual_multiclass_segmentation = postprocess_fn(
+        image,
+        batched_model_logits,
+        batched_logits_to_add,
+    )
+
+    assert torch.allclose(
+        actual_multiclass_segmentation,
+        expected_multiclass_segmentation,
+    )
+
+
 # OUTDATED
 
 # @jaxtyped(typechecker=beartype)
