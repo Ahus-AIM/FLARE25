@@ -1,28 +1,27 @@
-from typing import Iterator
+from typing import Callable, Iterator
 
 import torch
 from tensordict import TensorDict, TensorDictBase
-from torch.utils.data import DataLoader
 from torchrl.data import Binary, Bounded, Composite, Unbounded
 from torchrl.data.tensor_specs import TensorSpec
 from torchrl.envs import EnvBase
 
 from src.custom_types import (
-    BBOX_SHAPE,
     DONE_SHAPE,
     POINT_COORD_SHAPE,
     POINT_LABEL_SHAPE,
     REWARD_SHAPE,
+    SINGLE_BOX_SHAPE,
     STEP_SHAPE,
-    THRESHOLD_SHAPE,
-    BBox,
+    Box,
     Image,
     ImageEmbedderFn,
     ImageEmbedding,
+    ImageLogits,
+    ImageLogitsFn,
     InteractionFn,
-    Mask,
-    MaskFn,
-    MedicalData,
+    MulticlassImageLogits,
+    MulticlassSegmentation,
     PointCoord,
     PointCoords,
     PointLabel,
@@ -31,17 +30,13 @@ from src.custom_types import (
     PromptEmbeddings,
     Reward,
     RewardFn,
-    Segmentation,
     Step,
-    Threshold,
 )
-from src.dataset.npz_dataset import NPZDataset
 from src.model.modeling import AhusModel
 from src.rl.utils import pad_prompt_embeddings
 from src.utils.decode import decoder_forward
 from src.utils.interact import interact
-from src.utils.postprocess import standard_threshold
-from src.utils.reward import compute_multi_class_dsc_nsd_batch
+from src.utils.reward import compute_multi_class_dsc_nsd
 
 
 class InteractiveSegmentationEnv(EnvBase):
@@ -51,11 +46,11 @@ class InteractiveSegmentationEnv(EnvBase):
         self,
         n_steps: int,
         image_embedder_fn: ImageEmbedderFn,
-        mask_fn: MaskFn,
+        image_logits_fn: ImageLogitsFn,
         post_processing_fn: PostProcessingFn,
         interaction_fn: InteractionFn,
         reward_fn: RewardFn,
-        dataset_iter: Iterator[MedicalData],
+        td_iter: Iterator[TensorDict],
         device: torch.device,
     ):
         """
@@ -68,150 +63,182 @@ class InteractiveSegmentationEnv(EnvBase):
             dataset_iter: iterator over the dataset with batch size 1
             device: device to use
         """
-        super().__init__(device=device, batch_size=torch.Size((1,)))  # always use batch size of 1
+        super().__init__(
+            device=device, batch_size=torch.Size(())
+        )  # always use batch size of None
 
-        self.batch_size: torch.Size  # set by __init__
+        # self.batch_size: torch.Size  # set by __init__
         self.device: torch.device  # set by __init__
 
         self.n_steps: int = n_steps
         self.image_embedder_fn: ImageEmbedderFn = image_embedder_fn
-        self.mask_fn: MaskFn = mask_fn
+        self.image_logits_fn: ImageLogitsFn = image_logits_fn
         self.post_processing_fn: PostProcessingFn = post_processing_fn
         self.interaction_fn: InteractionFn = interaction_fn
         self.reward_fn: RewardFn = reward_fn
-        self.dataset_iter: Iterator[MedicalData] = dataset_iter
+        self.td_iter: Iterator[TensorDict] = td_iter
 
         self._make_spec()
 
     def _make_spec(self):
         self.observation_spec: TensorSpec = Composite(
-            # image has three channels (RGB)
+            # Image has a single channel with values between 0 and 1
             image=Bounded(
                 low=0,
                 high=1,
-                shape=self.batch_size + (1, -1, -1, -1),
+                shape=(-1, -1, -1),
                 dtype=torch.float32,
                 domain="continuous",
             ),
             image_embedding1=Unbounded(
-                shape=self.batch_size + (-1, -1, -1, -1),
+                shape=(-1, -1, -1, -1),
                 dtype=torch.float32,
                 domain="continuous",
             ),
             image_embedding2=Unbounded(
-                shape=self.batch_size + (-1, -1, -1, -1),
+                shape=(-1, -1, -1, -1),
                 dtype=torch.float32,
                 domain="continuous",
             ),
             image_embedding3=Unbounded(
-                shape=self.batch_size + (-1, -1, -1, -1),
+                shape=(-1, -1, -1, -1),
                 dtype=torch.float32,
                 domain="continuous",
             ),
             image_embedding4=Unbounded(
-                shape=self.batch_size + (-1, -1, -1, -1),
+                shape=(-1, -1, -1, -1),
                 dtype=torch.float32,
                 domain="continuous",
             ),
-            padded_prompt_embeddings=Unbounded(
-                shape=self.batch_size + (self.n_steps + 2, -1),  # bbox + number of points(steps)
+            multiclass_padded_prompt_embeddings=Unbounded(
+                shape=(-1, self.n_steps + 2, -1),  # bbox + number of points(steps)
                 dtype=torch.float32,
                 domain="continuous",
             ),
             # Since prompt_embeddings is padded, we need a mask to ignore the padding
-            prompt_embedding_attention_mask=Binary(
-                shape=self.batch_size + (self.n_steps + 2,), dtype=torch.bool, device=self.device
+            multiclass_prompt_embedding_attention_masks=Binary(
+                shape=(
+                    -1,
+                    self.n_steps + 2,
+                ),
+                dtype=torch.bool,
+                device=self.device,
             ),
-            # bbox is actually bounded, but we don't know the image size beforehand
-            bbox=Unbounded(
-                shape=self.batch_size + BBOX_SHAPE,
+            # One bbox per instance
+            boxes=Unbounded(
+                shape=(-1,) + SINGLE_BOX_SHAPE,
                 dtype=torch.float32,
                 domain="continuous",
             ),
             # mask has a single channel, same shape as image
-            mask=Unbounded(
-                shape=self.batch_size + (1, -1, -1, -1),
+            multiclass_logits_masks=Unbounded(
+                shape=(-1, -1, -1, -1),
                 dtype=torch.float32,
                 domain="continuous",
             ),
             # point_coords and point_labels are actually bounded, but we don't know the image size beforehand
-            point_coords=Unbounded(
-                shape=self.batch_size + (self.n_steps,) + POINT_COORD_SHAPE,
+            multiclass_point_coords=Unbounded(
+                shape=(
+                    -1,
+                    self.n_steps,
+                )
+                + POINT_COORD_SHAPE,
                 dtype=torch.float32,
                 domain="continuous",
             ),
-            point_labels=Unbounded(
-                shape=self.batch_size + (self.n_steps,) + POINT_LABEL_SHAPE,
+            multiclass_point_labels=Unbounded(
+                shape=(
+                    -1,
+                    self.n_steps,
+                )
+                + POINT_LABEL_SHAPE,
                 dtype=torch.int64,
                 domain="discrete",
             ),
             step=Bounded(
                 low=0,
                 high=self.n_steps - 1,
-                shape=self.batch_size + STEP_SHAPE,
+                shape=STEP_SHAPE,
                 dtype=torch.int64,
                 domain="discrete",
             ),
-            # segmentation has same shape as image
-            true_segmentation=Bounded(
-                low=0,
-                high=1,
-                shape=self.batch_size + (1, -1, -1, -1),
-                dtype=torch.int64,
+            true_multiclass_segmentation=Unbounded(
+                shape=(-1, -1, -1),
+                dtype=torch.uint8,
                 domain="discrete",
             ),
-            shape=self.batch_size,
         )
+        # We have as many actions as there are instances
         self.action_spec: TensorSpec = Composite(
             # sampling_method=Categorical(3, shape=(), dtype=torch.int64),
-            threshold=Bounded(
-                low=0,
-                high=1,
-                shape=self.batch_size + THRESHOLD_SHAPE,
+            logits_to_add=Unbounded(
+                shape=(-1, -1, -1, -1),
                 dtype=torch.float32,
                 domain="continuous",
             ),
-            shape=self.batch_size,
         )
         self.reward_spec: TensorSpec = Unbounded(
-            shape=self.batch_size + REWARD_SHAPE,
+            shape=REWARD_SHAPE,
             dtype=torch.float32,
             domain="continuous",
         )
-        self.done_spec: TensorSpec = Binary(shape=self.batch_size + DONE_SHAPE, dtype=torch.bool)
+        self.done_spec: TensorSpec = Binary(shape=DONE_SHAPE, dtype=torch.bool)
 
     def _reset(self, tensordict, **kwargs) -> TensorDict:
         if tensordict is None:
-            tensordict = TensorDict({}, batch_size=self.batch_size, device=self.device)
-        data = next(self.dataset_iter)
-        image, true_segmentation, bbox = data["image"], data["label"], data["boxes"]
+            tensordict = TensorDict({}, device=self.device)
+        data_td = next(self.td_iter)
+        image, true_multiclass_segmentation, boxes = (
+            data_td["image"],
+            data_td["true_multiclass_segmentation"],
+            data_td["boxes"],
+        )
+        # The number of instances is how many boxes we have
+        n_instances = boxes.shape
 
         # Move all data to the device
         image = image.to(tensordict.device)
-        true_segmentation = true_segmentation.to(tensordict.device)
-        bbox = bbox.to(tensordict.device)
-
-        assert (
-            torch.Size((image.size(0),)) == tensordict.batch_size
-        ), "Data batch dimension should be the same as env batch dimension"
+        true_multiclass_segmentation = true_multiclass_segmentation.to(
+            tensordict.device
+        )
+        boxes = boxes.to(tensordict.device)
 
         image_embeddings = self.image_embedder_fn(image)
 
-        # Produce initial mask and prompt embeddings
-        low_res_mask, prompt_embeddings = self.mask_fn(
-            [
-                image_embeddings[0],
-                image_embeddings[1],
-                image_embeddings[2],
-                image_embeddings[3],
-            ],
-            bbox,
-            None,
-            None,
-            None,
+        # Pass each instance through the mask function
+        multiclass_image_logits = []
+        multiclass_padded_prompt_embeddings = []
+        multiclass_prompt_embedding_attention_masks = []
+        for instance_idx in range(n_instances):
+            # Produce initial mask and prompt embeddings
+            image_logits, prompt_embeddings = self.image_logits_fn(
+                [
+                    image_embeddings[0],
+                    image_embeddings[1],
+                    image_embeddings[2],
+                    image_embeddings[3],
+                ],
+                boxes[instance_idx],
+                None,
+                None,
+                None,
+            )
+            padded_prompt_embeddings, prompt_embedding_attention_mask = (
+                pad_prompt_embeddings(prompt_embeddings, self.n_steps)
+            )
+            multiclass_image_logits.append(image_logits)
+            multiclass_padded_prompt_embeddings.append(padded_prompt_embeddings)
+            multiclass_prompt_embedding_attention_masks.append(
+                prompt_embedding_attention_mask
+            )
+
+        # Stack the results
+        multiclass_image_logits = torch.stack(multiclass_image_logits, dim=0)
+        multiclass_padded_prompt_embeddings = torch.stack(
+            multiclass_padded_prompt_embeddings, dim=0
         )
-        padded_prompt_embeddings, prompt_embedding_attention_mask = pad_prompt_embeddings(
-            prompt_embeddings, self.n_steps
+        multiclass_prompt_embedding_attention_mask = torch.stack(
+            multiclass_prompt_embedding_attention_masks, dim=0
         )
 
         td = TensorDict(
@@ -221,30 +248,41 @@ class InteractiveSegmentationEnv(EnvBase):
                 "image_embedding2": image_embeddings[1],
                 "image_embedding3": image_embeddings[2],
                 "image_embedding4": image_embeddings[3],
-                "padded_prompt_embeddings": padded_prompt_embeddings,
-                "prompt_embedding_attention_mask": prompt_embedding_attention_mask,
-                "bbox": bbox,
-                "mask": low_res_mask,
-                "point_coords": torch.zeros(
-                    tensordict.batch_size + (self.n_steps,) + POINT_COORD_SHAPE,
+                "multiclass_padded_prompt_embeddings": multiclass_padded_prompt_embeddings,
+                "multiclass_prompt_embedding_attention_masks": multiclass_prompt_embedding_attention_mask,
+                "boxes": boxes,
+                "multiclass_image_logits": multiclass_image_logits,
+                "multiclass_point_coords": torch.zeros(
+                    (
+                        n_instances,
+                        self.n_steps,
+                    )
+                    + POINT_COORD_SHAPE,
                     dtype=torch.float32,
                     device=tensordict.device,
                 ),
-                "point_labels": torch.zeros(
-                    tensordict.batch_size + (self.n_steps,) + POINT_LABEL_SHAPE,
+                "multiclass_point_labels": torch.zeros(
+                    (
+                        n_instances,
+                        self.n_steps,
+                    )
+                    + POINT_LABEL_SHAPE,
                     dtype=torch.int64,
                     device=tensordict.device,
                 ),
-                "step": torch.zeros(tensordict.batch_size + STEP_SHAPE, dtype=torch.int64, device=tensordict.device),
-                "true_segmentation": true_segmentation,
+                "step": torch.zeros(
+                    tensordict.batch_size + STEP_SHAPE,
+                    dtype=torch.int64,
+                    device=tensordict.device,
+                ),
+                "true_multiclass_segmentation": true_multiclass_segmentation,
                 "done": torch.full(
-                    tensordict.batch_size + DONE_SHAPE,
+                    DONE_SHAPE,
                     False,
                     dtype=torch.bool,
                     device=tensordict.device,
                 ),
             },
-            batch_size=tensordict.batch_size,
             device=tensordict.device,
         )
         return td
@@ -256,49 +294,94 @@ class InteractiveSegmentationEnv(EnvBase):
         # Only the first "steps" points and labels have meaningful values
         step: int = tensordict["step"][0]
 
-        # Segment using threshold chosen by the agent
-        segmentation = self.post_processing_fn(tensordict["image"], tensordict["mask"], tensordict["threshold"])
+        multiclass_segmentation = self.post_processing_fn(
+            tensordict["image"],
+            tensordict["multiclass_image_logits"],
+            tensordict["logits_to_add"],
+        )
 
         # Reward depends on segmentation
-        reward = self.reward_fn(segmentation, tensordict["true_segmentation"], tensordict["step"])
-
-        # Get new points
-        new_point_coord, new_point_label = self.interaction_fn(segmentation, tensordict["true_segmentation"])
-        # add new point coord and new label to the point_coords and point_labels tensors
-        new_point_coords = tensordict["point_coords"].clone()
-        new_point_coords[:, [step], :] = new_point_coord
-        new_point_labels = tensordict["point_labels"].clone()
-        new_point_labels[:, [step]] = new_point_label
-
-        # Update the mask and prompt embeddings using the new points
-        new_low_res_mask, new_prompt_embeddings = self.mask_fn(
-            [
-                tensordict["image_embedding1"],
-                tensordict["image_embedding2"],
-                tensordict["image_embedding3"],
-                tensordict["image_embedding4"],
-            ],
-            tensordict["bbox"],
-            tensordict["point_coords"][..., : step + 1, :],
-            tensordict["point_labels"][..., : step + 1],
-            tensordict["mask"],
+        reward = self.reward_fn(
+            multiclass_segmentation, tensordict["true_segmentation"], tensordict["step"]
         )
-        padded_prompt_embeddings = torch.zeros(
-            tensordict.batch_size
-            + (self.n_steps + 2, new_prompt_embeddings.shape[2]),  # bbox + number of points(steps)
-            dtype=torch.float32,
-            device=tensordict.device,
-        )
-        padded_prompt_embeddings[:, : new_prompt_embeddings.shape[1], :] = new_prompt_embeddings
-        prompt_embedding_attention_mask = torch.full(
-            tensordict.batch_size + (self.n_steps + 2,),
+
+        # Get new points for each instance, preallocate tensors
+        n_instances = tensordict["multiclass_boxes"].shape[0]
+        multiclass_padded_prompt_embeddings = tensordict[
+            "multiclass_padded_prompt_embeddings"
+        ].clone()
+        multiclass_prompt_embedding_attention_masks = tensordict[
+            "multiclass_prompt_embedding_attention_masks"
+        ].clone()
+        multiclass_image_logits = tensordict["multiclass_image_logits"].clone()
+        multiclass_point_coords = tensordict["multiclass_point_coords"].clone()
+        multiclass_point_labels = tensordict["multiclass_point_labels"].clone()
+        for instance_idx in range(n_instances):
+            singleclass_segmentation = multiclass_segmentation == instance_idx
+            true_singleclass_segmentation = (
+                tensordict["true_multiclass_segmentation"] == instance_idx
+            )
+            new_point_coord, new_point_label = self.interaction_fn(
+                singleclass_segmentation, true_singleclass_segmentation
+            )
+            # add new point coord and new label to the point_coords and point_labels tensors
+            new_point_coords = tensordict["multiclass_point_coords"][
+                instance_idx
+            ].clone()
+            new_point_coords[:, [step], :] = new_point_coord
+            new_point_labels = tensordict["multiclass_point_labels"][
+                instance_idx
+            ].clone()
+            new_point_labels[:, [step]] = new_point_label
+
+            # Update the mask and prompt embeddings using the new points
+            new_image_logits, new_prompt_embeddings = self.image_logits_fn(
+                [
+                    tensordict["image_embedding1"],
+                    tensordict["image_embedding2"],
+                    tensordict["image_embedding3"],
+                    tensordict["image_embedding4"],
+                ],
+                tensordict["boxes"][instance_idx],
+                new_point_coords[: step + 1],
+                new_point_labels[: step + 1],
+                tensordict["multiclass_image_logits"][instance_idx],
+            )
+            # Pad prompt embeddings
+            padded_prompt_embeddings = torch.zeros(
+                tensordict.batch_size
+                + (
+                    self.n_steps + 2,
+                    new_prompt_embeddings.shape[2],
+                ),  # bbox + number of points(steps)
+                dtype=torch.float32,
+                device=tensordict.device,
+            )
+            padded_prompt_embeddings[:, : new_prompt_embeddings.shape[1], :] = (
+                new_prompt_embeddings
+            )
+            prompt_embedding_attention_mask = torch.full(
+                tensordict.batch_size + (self.n_steps + 2,),
+                False,
+                dtype=torch.bool,
+                device=tensordict.device,
+            )
+            prompt_embedding_attention_mask[:, : new_prompt_embeddings.shape[1]] = True
+
+            multiclass_padded_prompt_embeddings[instance_idx] = padded_prompt_embeddings
+            multiclass_prompt_embedding_attention_masks[instance_idx] = (
+                prompt_embedding_attention_mask
+            )
+            multiclass_image_logits[instance_idx] = new_image_logits
+            multiclass_point_coords[instance_idx] = new_point_coords
+            multiclass_point_labels[instance_idx] = new_point_labels
+
+        done = torch.full(
+            tensordict.batch_size + DONE_SHAPE,
             False,
             dtype=torch.bool,
             device=tensordict.device,
         )
-        prompt_embedding_attention_mask[:, : new_prompt_embeddings.shape[1]] = True
-
-        done = torch.full(tensordict.batch_size + DONE_SHAPE, False, dtype=torch.bool, device=tensordict.device)
         done[tensordict["step"] + 1 == self.n_steps] = True
 
         return TensorDict(
@@ -308,14 +391,16 @@ class InteractiveSegmentationEnv(EnvBase):
                 "image_embedding2": tensordict["image_embedding2"],
                 "image_embedding3": tensordict["image_embedding3"],
                 "image_embedding4": tensordict["image_embedding4"],
-                "padded_prompt_embeddings": padded_prompt_embeddings,
-                "prompt_embedding_attention_mask": prompt_embedding_attention_mask,
-                "bbox": tensordict["bbox"],
-                "mask": new_low_res_mask,
-                "point_coords": new_point_coords,
-                "point_labels": new_point_labels,
+                "multiclass_padded_prompt_embeddings": multiclass_padded_prompt_embeddings,
+                "multiclass_prompt_embedding_attention_masks": multiclass_prompt_embedding_attention_masks,
+                "boxes": tensordict["boxes"],
+                "multiclass_image_logits": multiclass_image_logits,
+                "multiclass_point_coords": multiclass_point_coords,
+                "multiclass_point_labels": multiclass_point_labels,
                 "step": tensordict["step"] + 1,
-                "true_segmentation": tensordict["true_segmentation"],
+                "true_multiclass_segmentation": tensordict[
+                    "true_multiclass_segmentation"
+                ],
                 "done": done,
                 "reward": reward,
             },
@@ -328,55 +413,92 @@ def get_image_embedder_fn(
     ahus_model: AhusModel, ahus_model_device: torch.device, env_device: torch.device
 ) -> ImageEmbedderFn:
     def image_embedder_fn(image: Image) -> list[ImageEmbedding]:
-        image_embeddings = ahus_model.image_encoder(image.to(ahus_model_device))
-        # Move the embeddings to the env device
-        image_embeddings = [emb.to(env_device) for emb in image_embeddings]
+        # Ahus model expects a batch and channel dimension
+        image_embeddings = ahus_model.image_encoder(
+            image.to(ahus_model_device).unsqueeze(0).unsqueeze(0)
+        )
+        # Move the embeddings to the env device and remove batch dimension
+        image_embeddings = [emb.to(env_device).squeeze(0) for emb in image_embeddings]
         return image_embeddings
 
     return image_embedder_fn
 
 
-def get_mask_fn(ahus_model: AhusModel, ahus_model_device: torch.device, env_device: torch.device) -> MaskFn:
+def get_image_logits_fn(
+    ahus_model: AhusModel, ahus_model_device: torch.device, env_device: torch.device
+) -> ImageLogitsFn:
     def mask_fn(
         image_embeddings: list[ImageEmbedding],
-        bbox: BBox | None,
+        bbox: Box | None,
         point_coords: PointCoords | None,
         point_labels: PointLabels | None,
-        mask: Mask | None,
-    ) -> tuple[Mask, PromptEmbeddings]:
-        # TODO: this looks bad
-        image_embeddings = image_embeddings[::-1]
-        image_embeddings = [emb.to(ahus_model_device) for emb in image_embeddings]
+        image_logits: ImageLogits | None,
+    ) -> tuple[ImageLogits, PromptEmbeddings]:
+        # decoder_forward expects everything in batched format
+        image_embeddings = [
+            emb.to(ahus_model_device).unsqueeze(0) for emb in reversed(image_embeddings)
+        ]
+        bbox = bbox.to(ahus_model_device).unsqueeze(0) if bbox is not None else None
+        point_coords = (
+            point_coords.to(ahus_model_device).unsqueeze(0)
+            if point_coords is not None
+            else None
+        )
+        point_labels = (
+            point_labels.to(ahus_model_device).unsqueeze(0)
+            if point_labels is not None
+            else None
+        )
+        image_logits = (
+            image_logits.to(ahus_model_device).unsqueeze(0)
+            if image_logits is not None
+            else None
+        )
 
         # Assume that if either point_coords or point_labels is None, then both are None
         if point_coords is None or point_labels is None:
             points = None
         else:
-            points = (point_coords.to(ahus_model_device), point_labels.to(ahus_model_device))
+            points = (point_coords, point_labels)
 
         mask_logits, prompt_embeddings = decoder_forward(
             ahus_model,
             image_embeddings,
-            mask.to(ahus_model_device) if mask is not None else None,
+            image_logits,
             points,
-            bbox.to(ahus_model_device) if bbox is not None else None,
+            bbox,
         )
-        mask_logits: Mask = mask_logits.to(env_device)
-        prompt_embeddings: PromptEmbeddings = prompt_embeddings.to(env_device)
+
+        # Move back to env device and remove batch dimension
+        mask_logits: ImageLogits = mask_logits.to(env_device).squeeze(0)
+        prompt_embeddings: PromptEmbeddings = prompt_embeddings.to(env_device).squeeze(
+            0
+        )
+
         return mask_logits, prompt_embeddings
 
     return mask_fn
 
 
 def get_post_processing_fn() -> PostProcessingFn:
-    def post_processing_fn(image: Image, mask: Mask, threshold: Threshold) -> Segmentation:
-        return standard_threshold(mask, threshold)
+    def post_processing_fn(
+        image: Image,
+        image_logits: MulticlassImageLogits,
+        logits_to_add: MulticlassImageLogits,
+    ) -> MulticlassSegmentation:
+        # Simply take the argmax over the instance dimension
+        multiclass_segmentation = (
+            (image_logits + logits_to_add).argmax(dim=0).to(torch.uint8)
+        )
+        return multiclass_segmentation
 
     return post_processing_fn
 
 
 def get_interaction_fn() -> InteractionFn:
-    def interaction_fn(seg: Segmentation, true_seg: Segmentation) -> tuple[PointCoord, PointLabel]:
+    def interaction_fn(
+        seg: MulticlassSegmentation, true_seg: MulticlassSegmentation
+    ) -> tuple[PointCoord, PointLabel]:
         point_coord_list, point_label_list = interact(seg, true_seg)
         # Assume that we only receive one point coord and label
         point_coord: PointCoord = torch.cat(point_coord_list, dim=0)
@@ -388,8 +510,10 @@ def get_interaction_fn() -> InteractionFn:
 
 def get_reward_fn() -> RewardFn:
     # TODO: use step
-    def reward_fn(seg: Segmentation, true_seg: Segmentation, step: Step) -> Reward:
-        dsc_tensor, nsd_tensor = compute_multi_class_dsc_nsd_batch(
+    def reward_fn(
+        seg: MulticlassSegmentation, true_seg: MulticlassSegmentation, step: Step
+    ) -> Reward:
+        dsc_tensor, nsd_tensor = compute_multi_class_dsc_nsd(
             true_seg,
             seg,
             spacing=torch.ones(seg.shape[0], 3, dtype=torch.float32),
@@ -401,36 +525,32 @@ def get_reward_fn() -> RewardFn:
     return reward_fn
 
 
-def infinite_loader(dataset, batch_size=1, shuffle=True):
+def infinite_loader(factory: Callable[[], Iterator]):
     while True:
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
-        for batch in loader:
-            yield batch
+        iterator = factory()
+        for elem in iterator:
+            yield elem
 
 
-def single_sample_loader(dataset):
-    assert len(dataset) == 1
-    loader = DataLoader(dataset, batch_size=1, shuffle=False)
-    sample = next(iter(loader))
-    while True:
-        yield sample
-
-
-def get_env(ahus_model: AhusModel, ahus_model_device: torch.device, env_device: torch.device, dataset: NPZDataset):
+def get_env(
+    ahus_model: AhusModel,
+    ahus_model_device: torch.device,
+    env_device: torch.device,
+    td_iterator_factory: Callable[[], Iterator[TensorDict]],
+):
     env = InteractiveSegmentationEnv(
         n_steps=5,
-        image_embedder_fn=get_image_embedder_fn(ahus_model, ahus_model_device, env_device=env_device),
-        mask_fn=get_mask_fn(ahus_model, ahus_model_device=ahus_model_device, env_device=env_device),
+        image_embedder_fn=get_image_embedder_fn(
+            ahus_model, ahus_model_device, env_device=env_device
+        ),
+        image_logits_fn=get_image_logits_fn(
+            ahus_model, ahus_model_device=ahus_model_device, env_device=env_device
+        ),
         post_processing_fn=get_post_processing_fn(),
         interaction_fn=get_interaction_fn(),
         reward_fn=get_reward_fn(),
-        # dataset_iter=infinite_loader(
-        #     dataset,
-        #     batch_size=1,
-        #     shuffle=True,
-        # ),
-        dataset_iter=infinite_loader(
-            dataset,
+        td_iter=infinite_loader(
+            td_iterator_factory,
         ),
         device=env_device,
     )

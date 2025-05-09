@@ -15,7 +15,7 @@ from torchrl.envs import (
 from tqdm import tqdm
 
 import wandb
-from src.dataset.npz_dataset import NPZDataset
+from src.dataset.multiclass_npz_dataset import get_tensordict_iterator
 from src.model.build_ahus_model import model_registry
 from src.rl.agents import Agent
 from src.rl.agents.attention_based.ppo import AttentionPPOThresholdAgent
@@ -43,27 +43,24 @@ def main(args: argparse.Namespace) -> None:
     ahus_model.eval()
     ahus_model.requires_grad_(False)
 
-    dataset = NPZDataset(
-        base_dir=config.dataset.base_dir,
-        size_threshold=config.dataset.size_threshold,
-        transform=CropForeground(select_fn=lambda x: x > 0, k_divisible=8, allow_smaller=True),
-        data_suffix="npz",
-        label_dtype=torch.long,
-    )
+    td_iterator = get_tensordict_iterator(data_dir=Path(config.dataset.data_dir))
 
     train_env = get_env(
         ahus_model=ahus_model,
         ahus_model_device=config.ahus_model.device,
         env_device=config.env.device,
-        dataset=dataset,
+        td_iterator_factory=lambda: get_tensordict_iterator(data_dir=Path(config.dataset.data_dir)),
     )
     eval_env = get_env(
         ahus_model=ahus_model,
         ahus_model_device=config.ahus_model.device,
         env_device=config.env.device,
-        dataset=dataset,
+        td_iterator_factory=lambda: get_tensordict_iterator(data_dir=Path(config.dataset.data_dir)),
     )
-    check_env_specs(train_env)
+
+    td = train_env.reset()
+    td = train_env.rand_step(td)
+    # check_env_specs(train_env)
 
     # Get image, should always be the same
     # image1 = env.reset()["image"].cpu()
