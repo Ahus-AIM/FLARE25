@@ -124,6 +124,7 @@ from src.submission.segmentation import segmenter_registry
 join = os.path.join
 import argparse
 import shutil
+from pathlib import Path
 import time
 from collections import OrderedDict
 
@@ -163,6 +164,17 @@ def compute_multi_class_nsd(
         surface_distance = compute_surface_distances(gt_i, seg_i, spacing_mm=spacing)
         nsd.append(compute_surface_dice_at_tolerance(surface_distance, tolerance))
     return np.mean(nsd)
+
+def clear_dir(p: Path) -> None:
+    if not p.exists() and not p.is_symlink():
+        return  # Nothing to do
+
+    if p.is_symlink():
+        p.unlink()  # Remove the symlink only
+    elif p.is_dir():
+        shutil.rmtree(p, ignore_errors=True)  # Recursively delete the directory
+
+    p.mkdir(parents=True, exist_ok=False)  # Create new empty directory
 
 
 parser = argparse.ArgumentParser(
@@ -223,7 +235,7 @@ parser.add_argument(
     default="cuda",
     help="Which device to run the segmenter on.",
 )
-parser.add_argument("--size_threshold", type=int, default=128**3, help="Size of the input image.")
+parser.add_argument("--size_threshold", type=int, default=256*128*128, help="Size of the input image.")
 
 
 args = parser.parse_args()
@@ -249,12 +261,8 @@ test_cases = sorted(os.listdir(test_img_path))
 test_cases = [case for case in test_cases if "resampled" not in case]
 
 # create temp folers for inference one-by-one
-if os.path.exists(input_temp):
-    shutil.rmtree(input_temp)
-if os.path.exists(output_temp):
-    shutil.rmtree(output_temp)
-os.makedirs(input_temp)
-os.makedirs(output_temp)
+clear_dir(Path(input_temp))
+clear_dir(Path(output_temp))
 
 # load docker and create a new folder to save segmentation results
 # teamname = docker.split(".")[0].lower()
@@ -374,6 +382,7 @@ for case in tqdm(test_cases):
                     if torch.cuda.is_available():  # GPU available
                         import cupy as cp
                         from cucim.core.operations import morphology
+from pathlib import Path
 
                         error_mask_cp = cp.array(cropped_mask)
                         edt_cp = morphology.distance_transform_edt(error_mask_cp)
