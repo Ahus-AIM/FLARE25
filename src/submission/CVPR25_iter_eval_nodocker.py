@@ -141,30 +141,11 @@ from src.utils.surface_dice import (
     compute_dice_coefficient,
     compute_surface_dice_at_tolerance,
     compute_surface_distances,
+    compute_multi_class_dsc,
+    compute_multi_class_nsd,
 )
 
 
-# Taken from CVPR24 challenge code with change to np.unique
-def compute_multi_class_dsc(gt: Integer[np.ndarray, "D H W"], seg: Integer[np.ndarray, "D H W"]):
-    dsc = []
-    for i in np.unique(gt)[1:]:  # skip bg
-        gt_i = gt == i
-        seg_i = seg == i
-        dsc.append(compute_dice_coefficient(gt_i, seg_i))
-    return np.mean(dsc)
-
-
-# Taken from CVPR24 challenge code with change to np.unique
-def compute_multi_class_nsd(
-    gt: Integer[np.ndarray, "D H W"], seg: Integer[np.ndarray, "D H W"], spacing, tolerance=2.0
-):
-    nsd = []
-    for i in np.unique(gt)[1:]:  # skip bg
-        gt_i = gt == i
-        seg_i = seg == i
-        surface_distance = compute_surface_distances(gt_i, seg_i, spacing_mm=spacing)
-        nsd.append(compute_surface_dice_at_tolerance(surface_distance, tolerance))
-    return np.mean(nsd)
 
 
 def create_empty_dir(p: Path) -> None:
@@ -188,6 +169,8 @@ parser.add_argument(
     help="testing data path",
 )
 parser.add_argument("-o", "--save_path", default="./demo_seg", type=str, help="segmentation output path")
+parser.add_argument("--input_temp", default="./inputs", type=str, help="Path to store temporary input images")
+parser.add_argument("--output_temp", default="./outputs", type=str, help="Path to store temporary output images")
 parser.add_argument(
     "-val_gts",
     "--validation_gts_path",
@@ -240,6 +223,9 @@ parser.add_argument("--size_threshold", type=int, default=256 * 128 * 128, help=
 args = parser.parse_args()
 
 test_img_path = args.test_img_path
+save_path = args.save_path
+input_temp = args.input_temp
+output_temp = args.output_temp
 validation_gts_path = args.validation_gts_path
 verbose = args.verbose
 model_type = args.model_type
@@ -250,27 +236,22 @@ segmenter_checkpoint = args.segmenter_checkpoint
 segmenter_device = args.segmenter_device
 size_threshold = args.size_threshold
 
-# Since we will write to this temporary directories and we may have several processes running in parallel, we need to make sure that the directories are unique
-slug = generate_slug(2)
-save_path = os.path.join(args.save_path, slug)
-os.makedirs(save_path, exist_ok=True)
+# Ensure that the temporary directories are empty
+create_empty_dir(Path(save_path))
+create_empty_dir(Path(input_temp))
+create_empty_dir(Path(output_temp))
+
 
 # dockers = sorted(os.listdir(docker_path))
 test_cases = sorted(os.listdir(test_img_path))
 test_cases = [case for case in test_cases if "resampled" not in case]
-
-# create temp folers for inference one-by-one
-input_temp = f"./inputs/{slug}"
-output_temp = f"./outputs/{slug}"
-create_empty_dir(Path(input_temp))
-create_empty_dir(Path(output_temp))
 
 # load docker and create a new folder to save segmentation results
 # teamname = docker.split(".")[0].lower()
 # print("teamname docker: ", docker)
 teamname = "ahus"
 # os.system("docker image load -i {}".format(join(docker_path, docker)))
-team_outpath = join(save_path, slug)
+team_outpath = os.path.join(save_path, teamname)
 if os.path.exists(team_outpath):
     shutil.rmtree(team_outpath)
 os.makedirs(team_outpath)
