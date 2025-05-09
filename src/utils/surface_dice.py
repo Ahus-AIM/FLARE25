@@ -493,24 +493,26 @@ def compute_dice_coefficient(mask_gt, mask_pred):
     volume_intersect = (mask_gt & mask_pred).sum()
     return 2 * volume_intersect / volume_sum
 
-# Taken from CVPR24 challenge code with change to np.unique
-def compute_multi_class_dsc(gt: Integer[np.ndarray, "D H W"], seg: Integer[np.ndarray, "D H W"]) -> float:
+
+# Only added type annotations compared to CVPR25_iter_eval
+
+
+def compute_multi_class_dsc(gt: Integer[np.ndarray, "D H W"], seg: Integer[np.ndarray, "D H W"]) -> np.floating:
     dsc = []
     for i in np.unique(gt)[1:]:  # skip bg
         gt_i = gt == i
         seg_i = seg == i
         dsc.append(compute_dice_coefficient(gt_i, seg_i))
-    return float(np.mean(dsc))
+    return np.mean(dsc)
 
 
-# Taken from CVPR24 challenge code with change to np.unique
 def compute_multi_class_nsd(
     gt: Integer[np.ndarray, "D H W"], seg: Integer[np.ndarray, "D H W"], spacing, tolerance=2.0
-) -> float:
+) -> np.floating:
     nsd = []
     for i in np.unique(gt)[1:]:  # skip bg
         gt_i = gt == i
         seg_i = seg == i
         surface_distance = compute_surface_distances(gt_i, seg_i, spacing_mm=spacing)
         nsd.append(compute_surface_dice_at_tolerance(surface_distance, tolerance))
-    return float(np.mean(nsd))
+    return np.mean(nsd)
