@@ -34,3 +34,35 @@ def dict_to_namespace(d):
             setattr(ns, key, value)
 
     return ns
+
+
+def pad_prompt_embeddings(prompt_embeddings: torch.Tensor, n_steps: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+
+    Args:
+        prompt_embeddings: Float tensor of shape (batch_size, s, prompt_embedding_size) where s depends on the current number of points received.
+        n_steps: Number of feedback steps used to train the RL agent.
+    Returns:
+        padded_prompt_embeddings: Float tensor of shape (batch_size, n_steps+2, prompt_embedding_size)
+        prompt_embeddings_mask: Binary tensor of shape (batch_size, n_steps+2, prompt_embedding_size)
+
+    """
+
+    batch_size = torch.Size((prompt_embeddings.shape[0],))
+    device = prompt_embeddings.device
+
+    padded_prompt_embeddings = torch.zeros(
+        batch_size + (n_steps + 2, prompt_embeddings.shape[2]),  # bbox + number of points(steps)
+        dtype=torch.float32,
+        device=device,
+    )
+    padded_prompt_embeddings[:, : prompt_embeddings.shape[1], :] = prompt_embeddings
+    prompt_embedding_attention_mask = torch.full(
+        batch_size + (n_steps + 2,),
+        False,
+        dtype=torch.bool,
+        device=device,
+    )
+    prompt_embedding_attention_mask[:, : prompt_embeddings.shape[1]] = True
+
+    return padded_prompt_embeddings, prompt_embedding_attention_mask

@@ -5,6 +5,7 @@ This command is expected to take (D, H, W) images from one folder and write (D, 
 import argparse
 import os
 from contextlib import nullcontext
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import nibabel as nib
@@ -13,8 +14,10 @@ import torch
 import torch.nn.functional as F
 from jaxtyping import Integer
 from monai.transforms import DivisiblePad
+from tensordict import TensorDict
 
 from src.model.build_ahus_model import model_registry
+from src.rl.utils import pad_prompt_embeddings
 from src.submission.segmentation import Segmenter, segmenter_registry
 from src.utils.decode import decoder_forward
 
@@ -179,8 +182,9 @@ class InferencePipeline:
         # Model device is prioritized over segmenter device for general operations
         self.model_device: str = args.model_device
         self.segmenter_device: str = args.segmenter_device
+        self.n_steps: int = args.n_steps
         self.model: torch.nn.Module = self._load_model()
-        self.segmenter = self._load_segmenter()
+        self.segmenter: Segmenter = self._load_segmenter()
         self.coord_handler: VolumeTransforms = VolumeTransforms(args.size_threshold)
 
     # -------------------- Data Loading Helpers -------------------- #
@@ -315,7 +319,7 @@ class InferencePipeline:
 
     def _load_segmenter(self) -> Segmenter:
         segmenter = segmenter_registry[self.args.segmenter_type].load(
-            self.args.segmenter_checkpoint, torch.device(self.args.segmenter_device)
+            Path(self.args.segmenter_checkpoint), torch.device(self.args.segmenter_device)
         )
         return segmenter
 
@@ -329,9 +333,15 @@ class InferencePipeline:
         points: Optional[List[torch.Tensor]],
         boxes: torch.Tensor,
         batch_size: int,
-    ) -> np.ndarray:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Returns:
+            - mask_logits: (batch_size, 1, D, H, W)
+            - prompt_embeddings: (batch_size, n_points+2, prompt_embedding_size)
+        """
         num_boxes = boxes.shape[0]
         mask_logits_list = []
+        prompt_embeddings_list = []
 
         for i in range(0, num_boxes, batch_size):
             batch_slice = slice(i, min(i + batch_size, num_boxes))
@@ -339,7 +349,7 @@ class InferencePipeline:
 
             batch_image_embeddings = self._expand_image_embeddings(image_embeddings, batch_boxes.shape[0])
 
-            mask_logits_batch, _ = decoder_forward(
+            mask_logits_batch, prompt_embeddings = decoder_forward(
                 self.model,
                 batch_image_embeddings,
                 mask_logits=mask_logits[batch_slice] if mask_logits is not None else None,
@@ -347,10 +357,12 @@ class InferencePipeline:
                 boxes=batch_boxes,
             )
             mask_logits_list.append(mask_logits_batch.cpu())
+            prompt_embeddings_list.append(prompt_embeddings.cpu())
 
         mask_logits = torch.cat(mask_logits_list, dim=0)
+        prompt_embeddings = torch.cat(prompt_embeddings_list, dim=0)
 
-        return mask_logits
+        return mask_logits, prompt_embeddings
 
     def _log_model_view(self, mask_logits: torch.Tensor, volume: torch.tensor, boxes: torch.Tensor) -> None:
         pred_prob = torch.sigmoid(mask_logits)
@@ -376,7 +388,9 @@ class InferencePipeline:
             # image_embeddings: list[(1, C, D, H, W)]
             image_embeddings, _ = self.model.segresnet(volume)
             # mask_logits: (I, 1, D, H, W)
-            mask_logits = self._batched_decoder_inference(image_embeddings, mask_logits, points, boxes, batch_size=8)
+            mask_logits, prompt_embeddings = self._batched_decoder_inference(
+                image_embeddings, mask_logits, points, boxes, batch_size=8
+            )
 
         self._log_model_view(mask_logits, volume, boxes)
         self._save_mask_logits(mask_logits)
@@ -385,21 +399,30 @@ class InferencePipeline:
         mask_logits_orig_shape = self.coord_handler.backward(mask_logits)
 
         # The Segmenter is responsible for converting a masks of logits to binary segmentations
-        if points is None:
-            point_coords = None
-            point_labels = None
-        else:
-            point_coords = points[0]
-            point_labels = points[1]
+        # if points is None:
+        #     point_coords = None
+        #     point_labels = None
+        # else:
+        #     point_coords = points[0]
+        #     point_labels = points[1]
 
         with safe_autocast(device_type=self.segmenter_device.split(":")[0]):
             device = self.segmenter_device
+            padded_prompt_embeddings, prompt_embedding_attention_mask = pad_prompt_embeddings(
+                prompt_embeddings, self.n_steps
+            )
+            td = TensorDict(
+                {
+                    "mask": mask_logits_orig_shape,
+                    "bbox": boxes_orig_shape,
+                    "padded_prompt_embeddings": padded_prompt_embeddings,
+                    "prompt_embedding_attention_mask": prompt_embedding_attention_mask,
+                },
+                batch_size=[mask_logits_orig_shape.shape[0]],
+                device=device,
+            )
             binarized_pred_orig_shape: Integer[torch.Tensor, "image_depth image_height image_width"] = self.segmenter(
-                logits=mask_logits_orig_shape.to(device),  # TODO: why is this device call necessary?
-                image=volume.to(device),
-                bbox=boxes_orig_shape.to(device),
-                point_coords=point_coords.to(device) if point_coords is not None else None,
-                point_labels=point_labels.to(device) if point_labels is not None else None,
+                td
             )
 
         # Log function expects numpy arrays without batch/channel dimension for image and segmentations
@@ -465,8 +488,8 @@ class InferencePipeline:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Predict multi-class segmentation of all input images in a folder.")
-    parser.add_argument("--load_path", type=str, help="Folder path to the input image.", default="./inputs")
-    parser.add_argument("--save_path", type=str, help="Folder path to save the predictions.", default="./outputs")
+    parser.add_argument("--load_path", type=Path, help="Folder path to the input image.", default="./inputs")
+    parser.add_argument("--save_path", type=Path, help="Folder path to save the predictions.", default="./outputs")
     parser.add_argument(
         "--model_type", type=str, help="Model type to use for prediction.", default="ahus_model_rope_mixed"
     )
@@ -497,6 +520,9 @@ if __name__ == "__main__":
         help="Which device to run the segmenter on.",
     )
     parser.add_argument("--size_threshold", type=int, default=128**3, help="Size of the input image.")
+    parser.add_argument(
+        "--n_steps", type=int, default=5, help="How many steps the inference is assumed to be used for."
+    )
 
     args: argparse.Namespace = parser.parse_args()
     pipeline: InferencePipeline = InferencePipeline(args)

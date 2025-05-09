@@ -37,6 +37,7 @@ from src.custom_types import (
 )
 from src.dataset.npz_dataset import NPZDataset
 from src.model.modeling import AhusModel
+from src.rl.utils import pad_prompt_embeddings
 from src.utils.decode import decoder_forward
 from src.utils.interact import interact
 from src.utils.postprocess import standard_threshold
@@ -209,19 +210,9 @@ class InteractiveSegmentationEnv(EnvBase):
             None,
             None,
         )
-        padded_prompt_embeddings = torch.zeros(
-            tensordict.batch_size + (self.n_steps + 2, prompt_embeddings.shape[2]),  # bbox + number of points(steps)
-            dtype=torch.float32,
-            device=tensordict.device,
+        padded_prompt_embeddings, prompt_embedding_attention_mask = pad_prompt_embeddings(
+            prompt_embeddings, self.n_steps
         )
-        padded_prompt_embeddings[:, : prompt_embeddings.shape[1], :] = prompt_embeddings
-        prompt_embedding_attention_mask = torch.full(
-            tensordict.batch_size + (self.n_steps + 2,),
-            False,
-            dtype=torch.bool,
-            device=tensordict.device,
-        )
-        prompt_embedding_attention_mask[:, : prompt_embeddings.shape[1]] = True
 
         td = TensorDict(
             {

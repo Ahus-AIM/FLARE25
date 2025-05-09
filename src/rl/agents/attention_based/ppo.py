@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from tensordict.nn import (
     ProbabilisticTensorDictSequential,
     TensorDictModule,
-    TensorDictSequential,
 )
 from torch import Tensor, nn
 from torchrl.modules import (
@@ -15,9 +14,9 @@ from torchrl.modules import (
     TanhNormal,
 )
 
-from src.rl.utils import calculate_norm
 from src.rl.agents import PPOAgent, serializable
 from src.rl.models import PromptAttentionNet
+from src.rl.utils import calculate_norm
 
 
 class DummyBackbone(nn.Module):
@@ -32,15 +31,11 @@ class DummyBackbone(nn.Module):
             nn.ReLU(),
             nn.Linear(self.input_size // 2, self.input_size // 4),
             nn.ReLU(),
-            nn.Linear(
-                self.input_size // 4, self.output_size
-            ),  # (batch_size, n_points, output_size)
+            nn.Linear(self.input_size // 4, self.output_size),  # (batch_size, n_points, output_size)
         )
 
     def forward(self, x: Tensor, mask: Tensor) -> Tensor:
-        x = (x * mask.unsqueeze(-1)).nan_to_num(
-            0.0
-        )  # (batch_size, n_points, prompt_embedding_dim)
+        x = (x * mask.unsqueeze(-1)).nan_to_num(0.0)  # (batch_size, n_points, prompt_embedding_dim)
         x = self.net1(x)  # (1, n_points, output_size)
         x = x.permute(0, 2, 1)  # (1, output_size, n_points)
         x = F.avg_pool1d(x, kernel_size=x.shape[-1])  # (1, output_size, 1)
@@ -87,9 +82,7 @@ class AttentionPPOThresholdAgent(PPOAgent):
         )
 
         self.actor_head = ProbabilisticActor(
-            module=TensorDictModule(
-                self.actor_net, in_keys=["backbone_out"], out_keys=["loc", "scale"]
-            ),
+            module=TensorDictModule(self.actor_net, in_keys=["backbone_out"], out_keys=["loc", "scale"]),
             in_keys=["loc", "scale"],
             out_keys=["threshold"],
             distribution_class=TanhNormal,
@@ -105,13 +98,9 @@ class AttentionPPOThresholdAgent(PPOAgent):
             nn.Linear(self.backbone_out_size // 4, 1),
         )
 
-        self.value_head = TensorDictModule(
-            module=self.value_net, in_keys=["backbone_out"], out_keys=["state_value"]
-        )
+        self.value_head = TensorDictModule(module=self.value_net, in_keys=["backbone_out"], out_keys=["state_value"])
 
-        self.actor_value = ActorValueOperator(
-            self.backbone, self.actor_head, self.value_head
-        )
+        self.actor_value = ActorValueOperator(self.backbone, self.actor_head, self.value_head)
 
     def post_init_hook(self) -> None:
 

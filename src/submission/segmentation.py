@@ -1,34 +1,30 @@
-from typing import Callable, Protocol
+from pathlib import Path
+from typing import Callable, Protocol, Self
 
 import torch
 from jaxtyping import Integer
 from tensordict import TensorDict
 
-from src.custom_types import BBox, Image, Mask, PointCoords, PointLabels, Segmentation
-
-# from src.rl.agents.attention_based.ppo import DDPGThresholdAgent
-from src.rl.agents.mask_based.ddpg import DDPGThresholdAgent
+from src.rl.agents import Agent
 
 
 class Segmenter(Protocol):
     """
-    A segmenter is responsible for converting a mask of logits into a binary segmentation.
+    A segmenter is responsible for producing a multiclass binary segmentation.
     """
 
     device: torch.device
 
-    def __call__(
-        self, logits: Mask, image: Image, bbox: BBox, point_coords: PointCoords | None, point_labels: PointLabels | None
-    ) -> Integer[torch.Tensor, "image_depth image_height image_width"]:
+    def __call__(self, td: TensorDict) -> Integer[torch.Tensor, "image_depth image_height image_width"]:
         """
-        Performs segmentation on a single image, with multiple bounding boxes and points. The batch dimension in bbox, point_coords and point_labels represents different classes.
+        Performs segmentation on a single image, with multiple bounding boxes and points. The batch dimension in bbox, point_coords and point_labels represents different classes. Since each segmenter may require different inputs, it takes a TensorDict as input.
 
         Outputs: an integer tensor where each pixel is assigned a class. 0 represents the background, and 1 to n represent the classes.
         """
         ...
 
-    @staticmethod
-    def load(path: str, device: torch.device) -> "Segmenter":
+    @classmethod
+    def load(cls, path: Path, device: torch.device) -> Self:
         """
         Loads the segmenter from a path and places it on the device.
         """
@@ -48,103 +44,91 @@ def add_to_logits(logits: torch.Tensor, box_i: torch.Tensor, box_margin: int = 1
 
 
 def thresholded_argmax_segmentation(
-    logits: Mask,
-    image: Image,
-    bboxes: BBox,
-    point_coords: PointCoords | None,
-    point_labels: PointLabels | None,
-    segment_fn: Callable[
-        [Mask, Image, BBox, PointCoords | None, PointLabels | None], Segmentation
-    ],  # returns (N, 1, D, H, W) bool
+    td: TensorDict,
+    segment_fn: Callable[[TensorDict], None],
 ) -> Integer[torch.Tensor, "image_depth image_height image_width"]:
     """
     Produces a multi-class segmentation map from thresholded instance predictions.
+
+    Args:
+        td: TensorDict of shape (N,) with the following keys:
+            - "mask": logits of shape (N, 1, D, H, W)
+        segment_fn: function that writes to the "segmentation" key of the TensorDict, shape (N, 1, D, H, W).
 
     Returns:
         seg: LongTensor of shape (D, H, W), with values in [0, N].
              0 means no confident instance predicted that pixel.
              i means instance i gave the strongest confident prediction at that pixel.
     """
-    N, C, D, H, W = logits.shape
+    N, C, D, H, W = td["mask"].shape
+    assert C == 1, "Expected logits to have a channel dimension of 1"
     # print(f"Logits shape: {logits.shape}")
-    device = logits.device
+    # device = logits.device
 
+    # Writes "segmentation" key to the TensorDict
+    segment_fn(td)
     # Mask out logits where the prediction is not confident
-    confident_mask = segment_fn(logits, image, bboxes, point_coords, point_labels)  # (N, D, H, W)
-    valid_logits = torch.where(confident_mask, logits, float("-inf"))  # (N, D, H, W)
+    valid_logits = torch.where(td["segmentation"], td["mask"], float("-inf"))  # (N, D, H, W)
 
     # Add a dummy background logit (class 0)
-    background = torch.zeros(1, 1, D, H, W, device=device)
+    background = torch.zeros(1, 1, D, H, W, device=td.device)
     padded_logits = torch.cat([background, valid_logits], dim=0)
 
     # Argmax gives class index in [0, N]
     return padded_logits.argmax(dim=0).squeeze(0)  # (D, H, W)
 
 
-class DDPGThresholdAgentSegmenter(Segmenter):
+class AgentSegmenter(Segmenter):
     """
-    Wraps a PPOThresholdAgent to implement the Segmenter protocol.
+    Wraps an Agent to implement the Segmenter protocol.
     """
 
-    def __init__(self, agent: DDPGThresholdAgent, max_iter: int = 10):
+    def __init__(self, agent: Agent, max_iter: int = 10):
         self.agent = agent
         self.device = self.agent.device
         self.max_iter = max_iter
 
-    def __call__(
-        self,
-        logits: Mask,
-        image: Image,
-        bbox: BBox,
-        point_coords: PointCoords | None,
-        point_labels: PointLabels | None,
-    ) -> Integer[torch.Tensor, "image_depth image_height image_width"]:
+    def __call__(self, td: TensorDict) -> Integer[torch.Tensor, "image_depth image_height image_width"]:
+        """
+        Args:
+            td: TensorDict of shape (N,) with the following keys:
+                - "padded_prompt_embeddings"
+                - "prompt_embedding_attention_mask
+        """
         counter = 0
         all_instances_present = True
 
         while all_instances_present and counter < self.max_iter:
             # Get threshold from PPO agent
-            def segment_fn(
-                logits: Mask,
-                image: Image,
-                bboxes: BBox,
-                point_coords: PointCoords | None,
-                point_labels: PointLabels | None,
-            ) -> Mask:
-                # Get the threshold from the PPO agent
-                td = TensorDict({"mask": logits}, batch_size=logits.shape[:1], device=logits.device)
-                td = self.agent.policy_module(td)
-                threshold = td["threshold"]
-                return logits > threshold.reshape(-1, 1, 1, 1, 1)
+            def segment_fn(td: TensorDict) -> None:
+                self.agent.policy(td)
+                td["segmentation"] = td["mask"] > td["threshold"].reshape(-1, 1, 1, 1, 1)
 
             pred_long = thresholded_argmax_segmentation(
-                logits,
-                image,
-                bbox,
-                point_coords,
-                point_labels,
+                td,
                 segment_fn=segment_fn,
             )
 
             # Check class presence
             present_instances = torch.unique(pred_long)
-            if len(present_instances) == logits.shape[0] + 1:
+            if len(present_instances) == td["mask"].shape[0] + 1:
                 break
 
             # Add to logits for missing instances
-            for i in range(logits.shape[0]):
+            for i in range(td["mask"].shape[0]):
                 if (i + 1) not in present_instances:
-                    add_to_logits(logits[i, 0], bbox[i], increment=2**counter)
+                    add_to_logits(td["mask"][i, 0], td["bbox"][i], increment=2**counter)
 
             counter += 1
             all_instances_present = True
 
         return pred_long  # type: ignore
 
-    @staticmethod
-    def load(path: str, device: torch.device) -> "Segmenter":
-        agent = DDPGThresholdAgent.load(path, device)
-        return DDPGThresholdAgentSegmenter(agent)
+    @classmethod
+    def load(cls, path: Path, device: torch.device) -> Self:
+        agent = Agent.load(path)
+        agent.device = device
+        return cls(agent)
 
 
 class OriginalSegmenter(Segmenter):
@@ -155,9 +139,13 @@ class OriginalSegmenter(Segmenter):
     def __init__(self, device: torch.device):
         self.device = device  # expected by Segmenter protocol
 
-    def __call__(
-        self, logits: Mask, image: Image, bbox: BBox, point_coords: PointCoords | None, point_labels: PointLabels | None
-    ) -> Integer[torch.Tensor, "image_depth image_height image_width"]:
+    def __call__(self, td: TensorDict) -> Integer[torch.Tensor, "image_depth image_height image_width"]:
+        """
+        Args:
+            td: TensorDict of shape (N,) with the following keys:
+                - "mask": logits of shape (N, 1, D, H, W)
+                - "bbox": bounding boxes of shape (N, 2, 3)
+        """
         max_iter = 10
         ensure_all_present = True
         threshold = 0.5
@@ -165,8 +153,8 @@ class OriginalSegmenter(Segmenter):
         not_all_instances_present = True
         counter = 0
         while not_all_instances_present and counter < max_iter:
-            pred_prob = torch.sigmoid(logits)
-            pred_concat = torch.cat((torch.ones_like(logits)[0:1] * threshold, pred_prob), dim=0)
+            pred_prob = torch.sigmoid(td["mask"])
+            pred_concat = torch.cat((torch.ones_like(td["mask"])[0:1] * threshold, pred_prob), dim=0)
             pred_long = pred_concat.argmax(dim=0).squeeze(0)
 
             if not ensure_all_present:
@@ -174,24 +162,25 @@ class OriginalSegmenter(Segmenter):
 
             # For instances that are not yet present, we add a value to the logits in their bounding box
             present_instances = torch.unique(pred_long)
-            for i in range(logits.shape[0]):  # for each instance
+            for i in range(td["mask"].shape[0]):  # for each instance
                 if (i + 1) not in present_instances:
-                    add_to_logits(logits[i, 0], bbox[i], increment=2**counter)
+                    add_to_logits(td["mask"][i, 0], td["bbox"][i], increment=2**counter)
 
             counter += 1
 
-            not_all_instances_present = len(torch.unique(pred_long)) != logits.shape[0] + 1
+            not_all_instances_present = len(torch.unique(pred_long)) != td["mask"].shape[0] + 1
 
         # Is not unbounded
         return pred_long  # type: ignore
 
-    @staticmethod
-    def load(path: str, device: torch.device) -> "Segmenter":
+    @classmethod
+    def load(cls, path: Path, device: torch.device) -> Self:
         # Nothing to load
-        return OriginalSegmenter(device)
+        return cls(device)
 
 
 segmenter_registry = {
-    "ddpg_threshold": DDPGThresholdAgentSegmenter,
+    # "ddpg_threshold": DDPGThresholdAgentSegmenter,
+    "agent_segmenter": AgentSegmenter,
     "original": OriginalSegmenter,
 }

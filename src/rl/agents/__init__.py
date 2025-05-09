@@ -26,9 +26,7 @@ from torchrl.objectives.value import GAE
 T = TypeVar("T", bound="Agent")
 
 
-def field_with_metadata(
-    field_type: str, default=MISSING, default_factory=MISSING, init: bool = True
-):
+def field_with_metadata(field_type: str, default=MISSING, default_factory=MISSING, init: bool = True):
     """Create a dataclass field with metadata."""
     if default is not MISSING and default_factory is not MISSING:
         raise ValueError("Cannot specify both default and default_factory")
@@ -158,7 +156,6 @@ class Agent(ABC):
         return agent
 
 
-
 @dataclass(kw_only=True, eq=False, order=False)
 class PPOAgent(Agent, ABC):
     """Proximal Policy Optimization (PPO) agent."""
@@ -172,18 +169,10 @@ class PPOAgent(Agent, ABC):
     gamma: float = unserializable(default=1)
     lmbda: float = unserializable(default=0.95)
     clip_epsilon: float = unserializable(default=0.2)  # weight clipping threshold
-    entropy_bonus: bool = unserializable(
-        default=True
-    )  # whether to encourage exploration
-    entropy_coef: float = unserializable(
-        default=1e-4
-    )  # how much to weight the entropy loss term
-    critic_coef: float = unserializable(
-        default=1.0
-    )  # how much to weight the critic loss term
-    loss_critic_type: str = unserializable(
-        default="smooth_l1"
-    )  # what type of loss to use for the critic
+    entropy_bonus: bool = unserializable(default=True)  # whether to encourage exploration
+    entropy_coef: float = unserializable(default=1e-4)  # how much to weight the entropy loss term
+    critic_coef: float = unserializable(default=1.0)  # how much to weight the critic loss term
+    loss_critic_type: str = unserializable(default="smooth_l1")  # what type of loss to use for the critic
 
     # Optimizer parameters
     lr: float = unserializable(default=1e-3)
@@ -191,13 +180,9 @@ class PPOAgent(Agent, ABC):
 
     # Replay buffer parameters
     batch_size: int = unserializable(default=1000)
-    sub_batch_size: int = unserializable(
-        default=100
-    )  # size of batch when sampling from replay buffer
+    sub_batch_size: int = unserializable(default=100)  # size of batch when sampling from replay buffer
     num_epochs: int = unserializable(default=10)
-    replay_buffer_device: torch.device = unserializable(
-        default_factory=lambda: torch.device("cpu")
-    )
+    replay_buffer_device: torch.device = unserializable(default_factory=lambda: torch.device("cpu"))
 
     # Set in constructor
     policy_module: ProbabilisticTensorDictSequential = weights(init=False)
@@ -240,8 +225,7 @@ class PPOAgent(Agent, ABC):
             gamma=self.gamma,
             lmbda=self.lmbda,
             value_network=self.state_value_module,
-            average_gae=self.sub_batch_size
-            > 1,  # we cannot average or calculate std with a single sample
+            average_gae=self.sub_batch_size > 1,  # we cannot average or calculate std with a single sample
         )
         self.loss_module = ClipPPOLoss(
             actor_network=self.policy_module,
@@ -252,14 +236,10 @@ class PPOAgent(Agent, ABC):
             critic_coef=self.critic_coef,
             loss_critic_type=self.loss_critic_type,
         )
-        self.loss_keys = ["loss_objective", "loss_critic"] + (
-            ["loss_entropy"] if self.entropy_bonus else []
-        )
+        self.loss_keys = ["loss_objective", "loss_critic"] + (["loss_entropy"] if self.entropy_bonus else [])
         self.optimizer = optim.Adam(self.loss_module.parameters(), lr=self.lr)
         self.replay_buffer = TensorDictReplayBuffer(
-            storage=LazyTensorStorage(
-                max_size=self.batch_size, device=self.replay_buffer_device
-            ),
+            storage=LazyTensorStorage(max_size=self.batch_size, device=self.replay_buffer_device),
             sampler=SamplerWithoutReplacement(),
             batch_size=self.sub_batch_size,
         )
@@ -307,13 +287,9 @@ class PPOAgent(Agent, ABC):
 
         self.optimizer.zero_grad()
         loss_td: TensorDictBase = self.loss_module(td)
-        loss_tensor: Tensor = sum(
-            (loss_td[k] for k in self.loss_keys), torch.tensor(0.0, device=td.device)
-        )
+        loss_tensor: Tensor = sum((loss_td[k] for k in self.loss_keys), torch.tensor(0.0, device=td.device))
         loss_tensor.backward()
-        nn.utils.clip_grad_norm_(
-            self.loss_module.parameters(), max_norm=self.max_grad_norm
-        )
+        nn.utils.clip_grad_norm_(self.loss_module.parameters(), max_norm=self.max_grad_norm)
         self.optimizer.step()
 
         return loss_td
@@ -328,7 +304,6 @@ class PPOAgent(Agent, ABC):
         self._device = device
         self.policy_module = self.policy_module.to(self._device)
         self.state_value_module = self.state_value_module.to(self._device)
-
 
 
 @dataclass(kw_only=True, eq=False, order=False)
@@ -362,9 +337,7 @@ class DDPGAgent(Agent, ABC):
     replay_buffer_beta_end: float = serializable(default=1.0)
     replay_buffer_beta_annealing_num_batches: int = serializable(default=10000)
     init_random_frames: int = serializable(default=0)
-    replay_buffer_device: torch.device = unserializable(
-        default_factory=lambda: torch.device("cpu")
-    )
+    replay_buffer_device: torch.device = unserializable(default_factory=lambda: torch.device("cpu"))
 
     # Set in constructor
     policy_module: TensorDictModule = weights(init=False)
@@ -397,9 +370,7 @@ class DDPGAgent(Agent, ABC):
         self.pre_init_hook()
 
         self.policy_module = self.get_policy_module().to(self._device)
-        self.state_action_value_module = self.get_state_action_value_module().to(
-            self._device
-        )
+        self.state_action_value_module = self.get_state_action_value_module().to(self._device)
 
         self.loss_module = DDPGLoss(
             actor_network=self.policy_module,
@@ -410,9 +381,7 @@ class DDPGAgent(Agent, ABC):
         self.loss_keys = ["loss_actor", "loss_value"]
         self.optimizer = optim.Adam(self.loss_module.parameters(), lr=self.lr)
         self.replay_buffer = TensorDictReplayBuffer(
-            storage=LazyTensorStorage(
-                max_size=self.replay_buffer_size, device=self.replay_buffer_device
-            ),
+            storage=LazyTensorStorage(max_size=self.replay_buffer_size, device=self.replay_buffer_device),
             sampler=PrioritizedSampler(
                 max_capacity=self.replay_buffer_size,
                 alpha=self.replay_buffer_alpha,
@@ -472,13 +441,9 @@ class DDPGAgent(Agent, ABC):
 
         self.optimizer.zero_grad()
         loss_td: TensorDictBase = self.loss_module(td)
-        loss_tensor: Tensor = sum(
-            (loss_td[k] for k in self.loss_keys), torch.tensor(0.0, device=td.device)
-        )
+        loss_tensor: Tensor = sum((loss_td[k] for k in self.loss_keys), torch.tensor(0.0, device=td.device))
         loss_tensor.backward()
-        nn.utils.clip_grad_norm_(
-            self.loss_module.parameters(), max_norm=self.max_grad_norm
-        )
+        nn.utils.clip_grad_norm_(self.loss_module.parameters(), max_norm=self.max_grad_norm)
         self.optimizer.step()
 
         # Update priorities in the replay buffer

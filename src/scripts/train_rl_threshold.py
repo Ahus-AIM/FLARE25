@@ -1,5 +1,4 @@
 import argparse
-import os
 from pathlib import Path
 
 import torch
@@ -16,11 +15,10 @@ from torchrl.envs import (
 from tqdm import tqdm
 
 import wandb
-from src.rl.agents import Agent
-from src.rl.agents.attention_based.ppo import AttentionPPOThresholdAgent
 from src.dataset.npz_dataset import NPZDataset
 from src.model.build_ahus_model import model_registry
-from src.rl.agents.attention_based.ddpg import AttentionDDPGThresholdAgent
+from src.rl.agents import Agent
+from src.rl.agents.attention_based.ppo import AttentionPPOThresholdAgent
 from src.rl.mdp_env import get_env
 from src.rl.utils import dict_to_namespace
 
@@ -48,9 +46,7 @@ def main(args: argparse.Namespace) -> None:
     dataset = NPZDataset(
         base_dir=config.dataset.base_dir,
         size_threshold=config.dataset.size_threshold,
-        transform=CropForeground(
-            select_fn=lambda x: x > 0, k_divisible=8, allow_smaller=True
-        ),
+        transform=CropForeground(select_fn=lambda x: x > 0, k_divisible=8, allow_smaller=True),
         data_suffix="npz",
         label_dtype=torch.long,
     )
@@ -187,19 +183,16 @@ def main(args: argparse.Namespace) -> None:
                             f"eval/{k}": v
                             for k, v in (
                                 {
-                                    "reward sum": eval_td["next", "reward"]
-                                    .sum()
-                                    .item(),
-                                    "threshold": eval_td["threshold"]
-                                    .mean()
-                                    .item(),
+                                    "reward sum": eval_td["next", "reward"].sum().item(),
+                                    "threshold": eval_td["threshold"].mean().item(),
                                     # "baseline reward sum": baseline_td["next", "reward"]
                                     # .sum()
                                     # .item(),
                                     # "baseline threshold": baseline_td["threshold"]
                                     # .mean()
                                     # .item(),
-                                } | agent.get_eval_info()
+                                }
+                                | agent.get_eval_info()
                             ).items()
                         }
                     )
