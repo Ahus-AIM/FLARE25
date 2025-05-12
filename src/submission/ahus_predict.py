@@ -17,6 +17,9 @@ from monai.transforms.croppad.array import DivisiblePad
 from tensordict import TensorDict
 
 from src.custom_types import (
+    BatchedImageLogits,
+    BatchedPointCoords,
+    BatchedPointLabels,
     Boxes,
     Image,
 )
@@ -58,8 +61,8 @@ class VolumeTransforms:
         self,
         volume: Image,
         boxes: Boxes,
-        point_coords: MulticlassPointCoords | None,
-    ) -> tuple[Image, Boxes, MulticlassPointCoords | None]:
+        point_coords: BatchedPointCoords | None,
+    ) -> tuple[Image, Boxes, BatchedPointCoords | None]:
         shape = volume.shape  # D, H, W
         self.pooling_factors = (1, 1, 1)
 
@@ -83,8 +86,8 @@ class VolumeTransforms:
         return volume, boxes, point_coords
 
     def _crop(
-        self, volume: Image, boxes: Boxes, point_coords: MulticlassPointCoords | None
-    ) -> tuple[Image, Boxes, MulticlassPointCoords | None]:
+        self, volume: Image, boxes: Boxes, point_coords: BatchedPointCoords | None
+    ) -> tuple[Image, Boxes, BatchedPointCoords | None]:
         """Return cropped versions with coordinates restricted to the bounding boxes, with a margin of 16 pixels."""
         crop_margin = 16
 
@@ -134,11 +137,11 @@ class VolumeTransforms:
         self,
         volume: Image,
         boxes: Boxes,
-        point_coords: Optional[MulticlassPointCoords] = None,
+        point_coords: Optional[BatchedPointCoords] = None,
     ) -> tuple[
         Image,
         Boxes,
-        Optional[MulticlassPointCoords],
+        Optional[BatchedPointCoords],
     ]:
         self.orig_shape = volume.shape
 
@@ -159,17 +162,17 @@ class VolumeTransforms:
         self,
         volume: Image,
         boxes: Boxes,
-        point_coords: Optional[MulticlassPointCoords] = None,
+        point_coords: Optional[BatchedPointCoords] = None,
     ) -> tuple[
         Image,
         Boxes,
-        Optional[MulticlassPointCoords],
+        Optional[BatchedPointCoords],
     ]:
         volume, boxes, point_coords = self.preprocess_volume(volume, boxes, point_coords)
 
         return volume, boxes, point_coords
 
-    def backward(self, mask_logits: MulticlassImageLogits) -> MulticlassImageLogits:
+    def backward(self, mask_logits: BatchedImageLogits) -> BatchedImageLogits:
         assert self.pad_values is not None, "pad_values must be set before calling backward"
         assert self.orig_shape is not None, "orig_shape must be set before calling backward"
         assert self.crop_slices is not None, "crop_slices must be set before calling backward"
@@ -320,7 +323,7 @@ class InferencePipeline:
             boxes_tensor[i, 1, :] = torch.tensor([box["z_max"], box["z_mid_y_max"], box["z_mid_x_max"]])
         return boxes_tensor.to(self.model_device)
 
-    def _get_points(self, data: Dict[str, Any]) -> tuple[MulticlassPointCoords, MulticlassPointLabels] | None:
+    def _get_points(self, data: Dict[str, Any]) -> tuple[BatchedPointCoords, BatchedPointLabels] | None:
         """
         Converts the points from the data dictionary into a tensor format.
         """
@@ -339,7 +342,7 @@ class InferencePipeline:
 
         return (point_coords.to(self.model_device), point_labels.to(self.model_device))
 
-    def _get_mask_logits(self, data: Dict[str, Any]) -> MulticlassImageLogits | None:
+    def _get_mask_logits(self, data: Dict[str, Any]) -> BatchedImageLogits | None:
         mask_logits: Any = data.get("mask_logits", None)
         if mask_logits is not None:
             mask_logits = mask_logits.to(self.model_device)
@@ -348,7 +351,7 @@ class InferencePipeline:
     def _get_spacing(self, data: Dict[str, Any]) -> Float[np.ndarray, "3"]:
         return np.array(data["spacing"])
 
-    def _save_mask_logits(self, mask_logits: MulticlassImageLogits) -> None:
+    def _save_mask_logits(self, mask_logits: BatchedImageLogits) -> None:
         parts: List[str] = self.full_file.split(os.sep)
         mask_logits_path: str = os.sep.join(parts[:-1]) + os.sep + "mask_logits_" + parts[-1]
         np.savez(mask_logits_path, mask_logits=mask_logits.cpu().numpy())
@@ -378,7 +381,7 @@ class InferencePipeline:
         self,
         image_embeddings: torch.Tensor,
         mask_logits: Optional[torch.Tensor],
-        points: Optional[tuple[MulticlassPointCoords, MulticlassPointLabels]],
+        points: Optional[tuple[BatchedPointCoords, BatchedPointLabels]],
         boxes: Boxes,
         batch_size: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:

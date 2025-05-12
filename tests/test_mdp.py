@@ -74,7 +74,6 @@ def test_multiclass_to_singleclass_segmentations():
         n_classes=2,
     )
 
-
     assert torch.allclose(
         actual_singleclass_segmentations,
         expected_singleclass_segmentations,

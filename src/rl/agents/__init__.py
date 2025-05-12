@@ -14,6 +14,7 @@ from tensordict.nn import (
 from torch import Tensor, nn, optim
 from torchrl.data import (
     LazyTensorStorage,
+    ListStorage,
     ReplayBuffer,
     SamplerWithoutReplacement,
     TensorDictReplayBuffer,
@@ -238,11 +239,12 @@ class PPOAgent(Agent, ABC):
         )
         self.loss_keys = ["loss_objective", "loss_critic"] + (["loss_entropy"] if self.entropy_bonus else [])
         self.optimizer = optim.Adam(self.loss_module.parameters(), lr=self.lr)
-        self.replay_buffer = TensorDictReplayBuffer(
-            storage=LazyTensorStorage(max_size=self.batch_size, device=self.replay_buffer_device),
-            sampler=SamplerWithoutReplacement(),
-            batch_size=self.sub_batch_size,
-        )
+        # Since every element will have different size, we have to use a ListStorage
+        # self.replay_buffer = TensorDictReplayBuffer(
+        #     storage=ListStorage(max_size=self.batch_size),
+        #     sampler=SamplerWithoutReplacement(),
+        #     batch_size=self.sub_batch_size,
+        # )
 
         self.post_init_hook()
 
@@ -263,14 +265,19 @@ class PPOAgent(Agent, ABC):
             self.advantage_module(td)
 
             # Reset replay buffer each epoch
-            self.replay_buffer.extend(td)  # type: ignore
+            # self.replay_buffer.extend(td)  # type: ignore
 
-            for _ in range(self.batch_size // self.sub_batch_size):
-                loss_td = self._sample_and_train()
+            # loss_td = self._sample_and_train()
+            self.optimizer.zero_grad()
+            loss_td: TensorDictBase = self.loss_module(td)
+            loss_tensor: Tensor = sum((loss_td[k] for k in self.loss_keys), torch.tensor(0.0, device=td.device))
+            loss_tensor.backward()
+            nn.utils.clip_grad_norm_(self.loss_module.parameters(), max_norm=self.max_grad_norm)
+            self.optimizer.step()
 
-                # Accumulate losses
-                for k in self.loss_keys:
-                    total_loss_td[k] += loss_td[k].item()
+            # Accumulate losses
+            for k in self.loss_keys:
+                total_loss_td[k] += loss_td[k].item()
 
         # Compute average loss
         num_updates = self.num_epochs * (self.batch_size // self.sub_batch_size)
@@ -280,19 +287,19 @@ class PPOAgent(Agent, ABC):
 
         return process_td
 
-    def _sample_and_train(self) -> TensorDictBase:
-        """Sample from the replay buffer and train the policy, returning the loss td."""
-        td = self.replay_buffer.sample()
-        td = td.to(self._device)
+    # def _sample_and_train(self) -> TensorDictBase:
+    #     """Sample from the replay buffer and train the policy, returning the loss td."""
+    #     td = self.replay_buffer.sample()
+    #     td = td.to(self._device)
 
-        self.optimizer.zero_grad()
-        loss_td: TensorDictBase = self.loss_module(td)
-        loss_tensor: Tensor = sum((loss_td[k] for k in self.loss_keys), torch.tensor(0.0, device=td.device))
-        loss_tensor.backward()
-        nn.utils.clip_grad_norm_(self.loss_module.parameters(), max_norm=self.max_grad_norm)
-        self.optimizer.step()
+    #     self.optimizer.zero_grad()
+    #     loss_td: TensorDictBase = self.loss_module(td)
+    #     loss_tensor: Tensor = sum((loss_td[k] for k in self.loss_keys), torch.tensor(0.0, device=td.device))
+    #     loss_tensor.backward()
+    #     nn.utils.clip_grad_norm_(self.loss_module.parameters(), max_norm=self.max_grad_norm)
+    #     self.optimizer.step()
 
-        return loss_td
+    #     return loss_td
 
     @property
     def device(self) -> torch.device:

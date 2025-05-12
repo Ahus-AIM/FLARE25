@@ -8,7 +8,6 @@ from torchrl.collectors import SyncDataCollector
 from torchrl.envs import (  # check_env_specs,
     ExcludeTransform,
     ExplorationType,
-    check_env_specs,
     set_exploration_type,
 )
 from tqdm import tqdm
@@ -49,17 +48,22 @@ def main(args: argparse.Namespace) -> None:
         ahus_model_device=config.ahus_model.device,
         env_device=config.env.device,
         td_iterator_factory=lambda: get_tensordict_iterator(
-            val_dir=Path(config.dataset.val_dir), val_gt_dir=Path(config.dataset.val_gt_dir)
+            val_dir=Path(config.dataset.val_dir),
+            val_gt_dir=Path(config.dataset.val_gt_dir),
         ),
     )
-    eval_env = get_env(
-        ahus_model=ahus_model,
-        ahus_model_device=config.ahus_model.device,
-        env_device=config.env.device,
-        td_iterator_factory=lambda: get_tensordict_iterator(
-            val_dir=Path(config.dataset.val_dir), val_gt_dir=Path(config.dataset.val_gt_dir)
-        ),
-    )
+    eval_envs = [
+        get_env(
+            ahus_model=ahus_model,
+            ahus_model_device=config.ahus_model.device,
+            env_device=config.env.device,
+            td_iterator_factory=lambda: get_tensordict_iterator(
+                val_dir=Path(config.dataset.val_dir),
+                val_gt_dir=Path(config.dataset.val_gt_dir),
+            ),
+        )
+        for _ in range(3)
+    ]
 
     # Debug env manually
     # td = train_env.reset()
@@ -86,23 +90,21 @@ def main(args: argparse.Namespace) -> None:
     # We want to compare our agent to a baseline policy of never adding any logits
     def baseline_noop_policy(td: TensorDictBase) -> TensorDictBase:
         # Always choose the threshold 0.5
-        td["logits_to_add"] = torch.zeros(
-            (*td["image_logits"].shape[:-3] , 1), dtype=torch.float32, device=td.device
-        )
+        td["logits_to_add"] = torch.zeros((*td["image_logits"].shape[:-3], 1), dtype=torch.float32, device=td.device)
         return td
+
     # We want to compare our agent to a baseline policy of adding too much logits
     def baseline_positive_aggressive_policy(td: TensorDictBase) -> TensorDictBase:
         # Always choose the threshold 0.5
-        td["logits_to_add"] = 10*torch.ones(
-            (*td["image_logits"].shape[:-3] , 1), dtype=torch.float32, device=td.device
+        td["logits_to_add"] = 10 * torch.ones(
+            (*td["image_logits"].shape[:-3], 1), dtype=torch.float32, device=td.device
         )
         return td
+
     # We want to compare our agent to a baseline policy of adding too much logits
     def baseline_5_policy(td: TensorDictBase) -> TensorDictBase:
         # Always choose the threshold 0.5
-        td["logits_to_add"] = 5*torch.ones(
-            (*td["image_logits"].shape[:-3] , 1), dtype=torch.float32, device=td.device
-        )
+        td["logits_to_add"] = 5 * torch.ones((*td["image_logits"].shape[:-3], 1), dtype=torch.float32, device=td.device)
         return td
 
     # Debug manually
@@ -150,9 +152,9 @@ def main(args: argparse.Namespace) -> None:
         config=config_dict,
     )
 
-    wandb.watch(agent.backbone_net, log="all", log_freq=10)
-    wandb.watch(agent.actor_net, log="all", log_freq=10)
-    wandb.watch(agent.value_net, log="all", log_freq=10)
+    wandb.watch(agent.backbone_net, log="gradients", log_freq=1000)
+    wandb.watch(agent.actor_net, log="gradients", log_freq=1000)
+    wandb.watch(agent.value_net, log="gradients", log_freq=1000)
 
     try:
         for batch_idx, td in tqdm(enumerate(collector), total=config.total_frames):
@@ -182,21 +184,25 @@ def main(args: argparse.Namespace) -> None:
                     torch.no_grad(),
                     set_exploration_type(ExplorationType.DETERMINISTIC),
                 ):
-                    eval_td = eval_env.rollout(
-                        max_steps=config.eval_max_steps, policy=agent.policy, auto_cast_to_device=True
+                    eval_td = eval_envs[0].rollout(
+                        max_steps=config.eval_max_steps,
+                        policy=agent.policy,
+                        auto_cast_to_device=True,
                     )
                     # eval_td = eval_td.to("cpu")
-                    baseline_noop_td = eval_env.rollout(
-                        max_steps=config.eval_max_steps, policy=baseline_noop_policy, auto_cast_to_device=True
+                    baseline_noop_td = eval_envs[1].rollout(
+                        max_steps=config.eval_max_steps,
+                        policy=baseline_noop_policy,
+                        auto_cast_to_device=True,
                     )
                     # baseline_noop_td = baseline_noop_td.to("cpu")
-                    baseline_positive_aggressive_td = eval_env.rollout(
-                        max_steps=config.eval_max_steps, policy=baseline_positive_aggressive_policy, auto_cast_to_device=True
-                    )
+                    # baseline_positive_aggressive_td = eval_env.rollout(
+                    #     max_steps=config.eval_max_steps, policy=baseline_positive_aggressive_policy, auto_cast_to_device=True
+                    # )
                     # baseline_positive_aggressive_td = baseline_positive_aggressive_td.to("cpu")
-                    baseline_5_td = eval_env.rollout(
-                        max_steps=config.eval_max_steps, policy=baseline_5_policy, auto_cast_to_device=True
-                    )
+                    # baseline_5_td = eval_env.rollout(
+                    #     max_steps=config.eval_max_steps, policy=baseline_5_policy, auto_cast_to_device=True
+                    # )
                     # baseline_negative_aggressive_td = baseline_negative_aggressive_td.to("cpu")
 
                     # Log evaluation results
@@ -207,8 +213,8 @@ def main(args: argparse.Namespace) -> None:
                                 {
                                     "reward sum": eval_td["next", "reward"].sum().item(),
                                     "baseline noop reward sum": baseline_noop_td["next", "reward"].sum().item(),
-                                    "baseline positive aggressive reward sum": baseline_positive_aggressive_td["next", "reward"].sum().item(),
-                                    "baseline 5 reward sum": baseline_5_td["next", "reward"].sum().item(),
+                                    # "baseline positive aggressive reward sum": baseline_positive_aggressive_td["next", "reward"].sum().item(),
+                                    # "baseline 5 reward sum": baseline_5_td["next", "reward"].sum().item(),
                                     "logits_to_add": wandb.Histogram(eval_td["logits_to_add"]),
                                 }
                                 | agent.get_eval_info()

@@ -1,8 +1,5 @@
 from dataclasses import dataclass
-from typing import Any
 
-from scipy.stats import Normal
-from sympy.strategies import distribute
 import torch.nn.functional as F
 from tensordict.nn import (
     ProbabilisticTensorDictSequential,
@@ -15,13 +12,10 @@ from torchrl.modules import (
     IndependentNormal,
     NormalParamExtractor,
     ProbabilisticActor,
-    TanhNormal,
 )
 
 from src.rl.agents import PPOAgent, serializable
 from src.rl.models import PromptAttentionNet
-from src.rl.utils import calculate_norm
-
 
 # class DummyBackbone(nn.Module):
 #     def __init__(self, input_size: int, output_size: int):
@@ -128,9 +122,7 @@ class ValueNet(nn.Module):
     def forward(self, backbone_output: Tensor) -> Tensor:
         x = self.net1(backbone_output)  # (batch_size, n_instances, intermediate_size)
         x = x.permute(0, 2, 1)  # (batch_size, intermediate_size, n_instances)
-        x = F.avg_pool1d(
-            x, kernel_size=x.shape[-1]
-        )  # (batch_size, intermediate_size, 1)
+        x = F.avg_pool1d(x, kernel_size=x.shape[-1])  # (batch_size, intermediate_size, 1)
         x = x.squeeze(-1)  # (batch_size, intermediate_size)
         x = self.net2(x)  # (batch_size, output_size)
         return x
@@ -162,9 +154,7 @@ class AttentionPPOThresholdAgent(PPOAgent):
         self.actor_net = ActorNet(input_size=self.backbone_out_size, output_size=2)
 
         self.actor_head = ProbabilisticActor(
-            module=TensorDictModule(
-                self.actor_net, in_keys=["backbone_out"], out_keys=["loc", "scale"]
-            ),
+            module=TensorDictModule(self.actor_net, in_keys=["backbone_out"], out_keys=["loc", "scale"]),
             in_keys=["loc", "scale"],
             out_keys=["logits_to_add"],
             distribution_class=IndependentNormal,
@@ -178,13 +168,9 @@ class AttentionPPOThresholdAgent(PPOAgent):
             output_size=1,
         )
 
-        self.value_head = TensorDictModule(
-            module=self.value_net, in_keys=["backbone_out"], out_keys=["state_value"]
-        )
+        self.value_head = TensorDictModule(module=self.value_net, in_keys=["backbone_out"], out_keys=["state_value"])
 
-        self.actor_value = ActorValueOperator(
-            self.backbone, self.actor_head, self.value_head
-        )
+        self.actor_value = ActorValueOperator(self.backbone, self.actor_head, self.value_head)
 
     def post_init_hook(self) -> None:
         def optim_normalize_hook(optimizer, *args, **kwargs):

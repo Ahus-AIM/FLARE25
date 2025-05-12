@@ -88,7 +88,7 @@ class PromptAttentionNet(nn.Module):
 
         x = self.projection(x)  # (n_instances, output_size)
 
-        x = x.unsqueeze(0) # (1, n_instances, output_size)
+        x = x.unsqueeze(0)  # (1, n_instances, output_size)
 
         return x
 
