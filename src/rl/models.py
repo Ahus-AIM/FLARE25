@@ -55,31 +55,40 @@ class PromptAttentionNet(nn.Module):
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: (B, N, emb_dim) where B is the batch size and N is the number of prompts.
-            mask: (B, N) where B is the batch size and N is the number of prompts.
+            x: (batch_size, n_instances, n_prompts, emb_dim)
+            mask: (batch_size, n_instances, n_prompts)
 
         Returns:
-            x: (B, output_size) where B is the batch size.
+            x: (batch_size, n_instances, output_size)
         """
-        B, N, emb_dim = x.shape
+        batch_size, n_instances, n_prompts, emb_dim = x.shape
+
+        # Curently only supports batch size 1
+        assert batch_size == 1, "Batch size > 1 is not supported"
+
+        x = x.squeeze(0)  # (n_instances, n_prompts, emb_dim)
+        mask = mask.squeeze(0)  # (n_instances, n_prompts)
+
         # prompts that are not observed yet (mask=0), we set equal to the learnable vector
         x = x * mask.unsqueeze(-1) + (~mask).unsqueeze(-1) * self.embedding_for_missing_prompts
-        expanded_threshold_embedding = self.threshold_embedding[None, None, :].expand(B, -1, -1)
-        x = torch.cat([x, expanded_threshold_embedding], dim=1)  # (B, N+1, emb_dim)
+        expanded_threshold_embedding = self.threshold_embedding[None, None, :].expand(n_instances, -1, -1)
+        x = torch.cat([x, expanded_threshold_embedding], dim=1)  # (n_instances, n_points+1, emb_dim)
 
         for layer in self.attn_over_prompts:
             x = layer(x)
 
-        # x still has shape (B, N+1, emb_dim)
+        # x still has shape (n_instances, n_points+1, emb_dim)
 
-        x = x[:, -1, :].unsqueeze(0)  # (1, B, emb_dim)
+        x = x[:, -1, :].unsqueeze(0)  # (1, n_instances, emb_dim)
 
         for layer in self.attn_over_instances:
             x = layer(x)
 
-        x = x.squeeze(0)  # (B, emb_dim)
+        x = x.squeeze(0)  # (n_instances, emb_dim)
 
-        x = self.projection(x)  # (B, output_size)
+        x = self.projection(x)  # (n_instances, output_size)
+
+        x = x.unsqueeze(0) # (1, n_instances, output_size)
 
         return x
 

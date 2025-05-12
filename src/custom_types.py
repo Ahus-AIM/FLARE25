@@ -39,7 +39,7 @@ Boxes = Float[Tensor, f"n_instances {size_to_str(SINGLE_BOX_SHAPE)}"]
 BatchedImage = Float[Tensor, "batch image_depth image_height image_width"]
 BatchedImageLogits = Float[Tensor, "batch image_depth image_height image_width"]
 BatchedChannelImageLogits = Float[Tensor, "batch 1 image_depth image_height image_width"]
-BatchedSegmentation = Integer[Tensor, "batch image_depth image_height image_width"]
+BatchedSegmentation = Bool[Tensor, "batch image_depth image_height image_width"]
 BatchedChannelSegmentation = Bool[Tensor, "batch 1 image_depth image_height image_width"]
 BatchedImageEmbedding = Float[Tensor, "batch _embedding_channel _embedding_depth _embedding_height _embedding_width"]
 BatchedPromptEmbeddings = Float[Tensor, "batch n_points prompt_embedding_size"]
@@ -80,12 +80,12 @@ PostProcessingFn = Callable[
     MulticlassSegmentation,
 ]
 
-# Interaction applies to predicted multiclass segmentation and returns
+# Interaction applies to instance-wise segmentation and returns
 # one point per class.
 InteractionFn = Callable[
     [
-        MulticlassSegmentation,  # predicted segmentation
-        MulticlassSegmentation,  # true segmentation
+        BatchedSegmentation,  # predicted segmentation
+        BatchedSegmentation,  # true segmentation
     ],
     tuple[BatchedPointCoord, BatchedPointLabel],  # new point and label per class
 ]

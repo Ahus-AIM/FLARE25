@@ -4,6 +4,7 @@ from typing import Iterator
 import numpy as np
 import torch
 from tensordict import TensorDict
+from monai.transforms.croppad.array import DivisiblePad
 
 
 def dicts_to_tensor_boxes(box_dict: np.ndarray) -> torch.Tensor:
@@ -23,24 +24,26 @@ def dicts_to_tensor_boxes(box_dict: np.ndarray) -> torch.Tensor:
 
 def get_tensordict_iterator(val_dir: Path, val_gt_dir: Path) -> Iterator[TensorDict]:
     """Iterate over files in val_dir, yielding TensorDicts with no batch size, with the keys
-    - "image": the image as a float32 tensor of shape (D, H, W)
+    - "image": the image as a float32 tensor of shape (D, H, W), where each dimension is padded to be divisible by 8
     - "boxes": the boxes as an int32 tensor of shape (n_instances, 2, 3)
     - "spacings": the spacing, as a float32 tensor of shape (3,)
-    - "true_multiclass_segmentation": the true multiclass segmentation as a uint8 tensor of shape (D, H, W). Read from val_gt_dir.
+    - "true_multiclass_segmentation": the true multiclass segmentation as a uint8 tensor of shape (D, H, W), where each dimension is padded to be divisible by 8. Read from val_gt_dir.
 
     Note: Since the original ground truth is binary and batched, we assume that no instances are overlapping when we take the argmax.
     """
     file_paths: list[Path] = list(val_dir.iterdir())
+
+    padder = DivisiblePad(k=8, method="end", value=0)
 
     for file_path in file_paths:
         val_data = np.load(file_path, allow_pickle=True)
         val_gt_data = np.load(val_gt_dir / file_path.name, allow_pickle=True)
         yield TensorDict(
             {
-                "image": torch.tensor(val_data["imgs"] / 255.0, dtype=torch.float32),
+                "image": padder(torch.tensor(val_data["imgs"] / 255.0, dtype=torch.float32).unsqueeze(0)).squeeze(0),
                 "boxes": dicts_to_tensor_boxes(val_data["boxes"]),
                 "spacing": torch.tensor(val_data["spacing"], dtype=torch.float32),
-                "true_multiclass_segmentation": torch.tensor(val_gt_data["gts"], dtype=torch.uint8),
+                "true_multiclass_segmentation": padder(torch.tensor(val_gt_data["gts"], dtype=torch.uint8).unsqueeze(0)).squeeze(0),
             },
             batch_size=(),
         )

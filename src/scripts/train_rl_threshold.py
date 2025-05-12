@@ -8,6 +8,7 @@ from torchrl.collectors import SyncDataCollector
 from torchrl.envs import (  # check_env_specs,
     ExcludeTransform,
     ExplorationType,
+    check_env_specs,
     set_exploration_type,
 )
 from tqdm import tqdm
@@ -61,10 +62,10 @@ def main(args: argparse.Namespace) -> None:
     )
 
     # Debug env manually
-    td = train_env.reset()
-    td = train_env.rand_step(td)
-    td = td["next"]
-    td = train_env.rand_step(td)
+    # td = train_env.reset()
+    # td = train_env.rand_step(td)
+    # td = td["next"]
+    # td = train_env.rand_step(td)
     # check_env_specs(train_env)
 
     # Get image, should always be the same
@@ -82,19 +83,35 @@ def main(args: argparse.Namespace) -> None:
         **config_dict["agent"]["kwargs"],
     )
 
-    # We want to compare our agent to a baseline policy of always choosing the threshold 0.5
-    def baseline_policy(td: TensorDictBase) -> TensorDictBase:
+    # We want to compare our agent to a baseline policy of never adding any logits
+    def baseline_noop_policy(td: TensorDictBase) -> TensorDictBase:
         # Always choose the threshold 0.5
-        td["threshold"] = 0.5 * torch.ones(td.batch_size + (1,), device=td.device)
+        td["logits_to_add"] = torch.zeros(
+            (*td["image_logits"].shape[:-3] , 1), dtype=torch.float32, device=td.device
+        )
+        return td
+    # We want to compare our agent to a baseline policy of adding too much logits
+    def baseline_positive_aggressive_policy(td: TensorDictBase) -> TensorDictBase:
+        # Always choose the threshold 0.5
+        td["logits_to_add"] = 10*torch.ones(
+            (*td["image_logits"].shape[:-3] , 1), dtype=torch.float32, device=td.device
+        )
+        return td
+    # We want to compare our agent to a baseline policy of adding too much logits
+    def baseline_5_policy(td: TensorDictBase) -> TensorDictBase:
+        # Always choose the threshold 0.5
+        td["logits_to_add"] = 5*torch.ones(
+            (*td["image_logits"].shape[:-3] , 1), dtype=torch.float32, device=td.device
+        )
         return td
 
     # Debug manually
-    # td = train_env.reset()
-    # td = agent.policy(td.to(agent.device)).to(train_env.device)
-    # td = train_env.step(td)
-    # td = td["next"]
-    # td = agent.policy(td)
-    # td = train_env.step(td)
+    td = train_env.reset()
+    td = agent.policy(td.to(agent.device)).to(train_env.device)
+    td = train_env.step(td)
+    td = td["next"]
+    td = agent.policy(td.to(agent.device)).to(train_env.device)
+    td = train_env.step(td)
 
     env_keys_to_exclude = [
         "image",
@@ -135,6 +152,8 @@ def main(args: argparse.Namespace) -> None:
 
     try:
         for batch_idx, td in tqdm(enumerate(collector), total=config.total_frames):
+            # Collapse agent and env batch dimensions
+            td = td.flatten(0, 1)
             loss_info = agent.process_batch(td.to(agent.device))
 
             # Log network parameter norm
@@ -162,13 +181,19 @@ def main(args: argparse.Namespace) -> None:
                     eval_td = eval_env.rollout(
                         max_steps=config.eval_max_steps, policy=agent.policy, auto_cast_to_device=True
                     )
-                    # baseline_td = train_env.rollout(
-                    #     max_steps=config.eval_max_steps, policy=baseline_policy
-                    # )
-
-                    # Move to cpu for logging
-                    eval_td = eval_td.to("cpu")
-                    # baseline_td = baseline_td.to("cpu")
+                    # eval_td = eval_td.to("cpu")
+                    baseline_noop_td = eval_env.rollout(
+                        max_steps=config.eval_max_steps, policy=baseline_noop_policy, auto_cast_to_device=True
+                    )
+                    # baseline_noop_td = baseline_noop_td.to("cpu")
+                    baseline_positive_aggressive_td = eval_env.rollout(
+                        max_steps=config.eval_max_steps, policy=baseline_positive_aggressive_policy, auto_cast_to_device=True
+                    )
+                    # baseline_positive_aggressive_td = baseline_positive_aggressive_td.to("cpu")
+                    baseline_5_td = eval_env.rollout(
+                        max_steps=config.eval_max_steps, policy=baseline_5_policy, auto_cast_to_device=True
+                    )
+                    # baseline_negative_aggressive_td = baseline_negative_aggressive_td.to("cpu")
 
                     # Log evaluation results
                     run.log(
@@ -177,6 +202,9 @@ def main(args: argparse.Namespace) -> None:
                             for k, v in (
                                 {
                                     "reward sum": eval_td["next", "reward"].sum().item(),
+                                    "baseline noop reward sum": baseline_noop_td["next", "reward"].sum().item(),
+                                    "baseline positive aggressive reward sum": baseline_positive_aggressive_td["next", "reward"].sum().item(),
+                                    "baseline 5 reward sum": baseline_5_td["next", "reward"].sum().item(),
                                     "logits_to_add": wandb.Histogram(eval_td["logits_to_add"]),
                                 }
                                 | agent.get_eval_info()

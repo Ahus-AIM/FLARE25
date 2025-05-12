@@ -21,19 +21,19 @@ dataset:
 agent:
   kwargs:
     _device: "cuda"
-    gamma: 0.99
+    gamma: 1.0
     lmbda: 0.0
-    clip_epsilon: 0.2
+    clip_epsilon: 0.1
     entropy_bonus: true
-    entropy_coef: 0.1
+    entropy_coef: 0.01 # default
     critic_coef: 1
     loss_critic_type: "smooth_l1"
     lr: 0.0001
-    max_grad_norm: 10
+    max_grad_norm: 1
     batch_size: 1
     sub_batch_size: 1
     num_epochs: 10
     replay_buffer_device: "cuda"
     prompt_embedding_dim: 128
-    backbone_out_size: 16
+    backbone_out_size: 32
   save_path: "weights/attention_ppo_threshold/agent"

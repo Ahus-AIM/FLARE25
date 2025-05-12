@@ -19,9 +19,6 @@ from tensordict import TensorDict
 from src.custom_types import (
     Boxes,
     Image,
-    MulticlassImageLogits,
-    MulticlassPointCoords,
-    MulticlassPointLabels,
 )
 from src.model.registry import model_registry
 from src.rl.utils import pad_prompt_embeddings

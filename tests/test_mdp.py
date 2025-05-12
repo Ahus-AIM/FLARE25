@@ -1,13 +1,9 @@
 import torch
 
-from src.rl.mdp_env import get_post_processing_fn
+from src.rl.utils import image_logits_to_multiclass_segmentation, multiclass_to_singleclass_segmentations
 
 
-def test_mdp_postprocess_fn():
-    postprocess_fn = get_post_processing_fn()
-
-    image = torch.zeros(3, 3)
-
+def test_image_logits_to_multiclass_segmentation():
     batched_model_logits = torch.tensor(
         [
             [
@@ -23,7 +19,6 @@ def test_mdp_postprocess_fn():
         ],
         dtype=torch.float32,
     )
-    batched_logits_to_add = torch.zeros_like(batched_model_logits)
 
     expected_multiclass_segmentation = torch.tensor(
         [
@@ -36,15 +31,53 @@ def test_mdp_postprocess_fn():
         dtype=torch.uint8,
     )
 
-    actual_multiclass_segmentation = postprocess_fn(
-        image,
+    actual_multiclass_segmentation = image_logits_to_multiclass_segmentation(
         batched_model_logits,
-        batched_logits_to_add,
     )
 
     assert torch.allclose(
         actual_multiclass_segmentation,
         expected_multiclass_segmentation,
+    )
+
+
+def test_multiclass_to_singleclass_segmentations():
+    multiclass_segmentation = torch.tensor(
+        [
+            [
+                [0, 0, 0],
+                [1, 1, 2],
+                [1, 1, 2],
+            ],
+        ],
+        dtype=torch.long,
+    )
+
+    expected_singleclass_segmentations = torch.tensor(
+        [
+            [
+                [0, 0, 0],
+                [1, 1, 0],
+                [1, 1, 0],
+            ],
+            [
+                [0, 0, 0],
+                [0, 0, 1],
+                [0, 0, 1],
+            ],
+        ],
+        dtype=torch.bool,
+    )
+
+    actual_singleclass_segmentations = multiclass_to_singleclass_segmentations(
+        multiclass_segmentation,
+        n_classes=2,
+    )
+
+
+    assert torch.allclose(
+        actual_singleclass_segmentations,
+        expected_singleclass_segmentations,
     )
 
 
