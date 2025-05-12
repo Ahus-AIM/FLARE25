@@ -150,6 +150,10 @@ def main(args: argparse.Namespace) -> None:
         config=config_dict,
     )
 
+    wandb.watch(agent.backbone_net, log="all", log_freq=10)
+    wandb.watch(agent.actor_net, log="all", log_freq=10)
+    wandb.watch(agent.value_net, log="all", log_freq=10)
+
     try:
         for batch_idx, td in tqdm(enumerate(collector), total=config.total_frames):
             # Collapse agent and env batch dimensions

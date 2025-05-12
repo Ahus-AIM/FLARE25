@@ -15,7 +15,8 @@ dataset:
   # size_threshold: 2097152 # 128^3
   # size_threshold: 4194304 # 256*128*128
   # size_threshold: 262144 # 64*64*64
-  val_dir: "data/CVPR-BiomedSegFM/3D_val_single"
+  # val_dir: "data/CVPR-BiomedSegFM/3D_val_single"
+  val_dir: "data/CVPR-BiomedSegFM/3D_val_curated"
   val_gt_dir: "data/CVPR-BiomedSegFM/3D_val_gt/3D_val_gt_interactive"
 # dataset
 agent:
