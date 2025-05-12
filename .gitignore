@@ -180,3 +180,6 @@ cython_debug/
 
 # WandB logs
 wandb/
+
+# slurm script for easy of use
+slurm.sh
