@@ -158,7 +158,7 @@ class AttentionPPOThresholdAgent(PPOAgent):
             in_keys=["loc", "scale"],
             out_keys=["logits_to_add"],
             distribution_class=IndependentNormal,
-            distribution_kwargs={"upscale": 100.0},
+            distribution_kwargs={"upscale": 10.0},
             return_log_prob=True,
         )
 

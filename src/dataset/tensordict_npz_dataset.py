@@ -7,6 +7,7 @@ from monai.transforms.croppad.array import DivisiblePad
 from tensordict import TensorDict
 
 from src.custom_types import Boxes, Image, MulticlassSegmentation
+from src.submission.ahus_predict import InferencePipeline
 
 
 def dicts_to_tensor_boxes(box_dict: np.ndarray) -> Boxes:
@@ -60,7 +61,7 @@ def crop_to_boxes(
     return cropped_image, cropped_multiclass_segmentation, cropped_boxes
 
 
-def get_tensordict_iterator(val_dir: Path, val_gt_dir: Path) -> Iterator[TensorDict]:
+def get_td_iterator(val_dir: Path, val_gt_dir: Path) -> Iterator[TensorDict]:
     """Iterate in a sorted fashion over files in val_dir, yielding TensorDicts of medical data.
 
     The tensordict has no batch size and the keys
@@ -107,4 +108,21 @@ def get_tensordict_iterator(val_dir: Path, val_gt_dir: Path) -> Iterator[TensorD
                 "true_multiclass_segmentation": true_multiclass_segmentation,
             },
             batch_size=(),
+        )
+
+
+def log_td_iterator_to_folder(td_iter: Iterator[TensorDict], folder: Path, max_items: int = 1000) -> None:
+    """Log the contents of each tensordict in the iterator in a .nii.gz format."""
+    folder.mkdir(parents=True, exist_ok=True)
+    for i, td in enumerate(td_iter):
+        if i >= max_items:
+            break
+
+        save_dir = folder / str(i)
+
+        InferencePipeline.log_predictions_niigz(
+            volume=td["image"],
+            boxes=td["boxes"],
+            multiclass_segmentation=td["true_multiclass_segmentation"],
+            save_dir=str(save_dir),
         )

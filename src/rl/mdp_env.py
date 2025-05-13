@@ -29,6 +29,7 @@ from src.custom_types import (
     ImageLogitsFn,
     InteractionFn,
     MulticlassSegmentation,
+    PointCoord,
     PostProcessingFn,
     Reward,
     RewardFn,
@@ -40,6 +41,7 @@ from src.rl.utils import (
     multiclass_to_singleclass_segmentations,
     pad_prompt_embeddings,
 )
+from src.transform.transform import VolumeTransforms
 from src.utils.decode import decoder_forward
 from src.utils.interact import interact
 from src.utils.reward import compute_multi_class_dsc_nsd
@@ -55,9 +57,12 @@ class InteractiveSegmentationEnv(EnvBase):
         image_logits_fn: ImageLogitsFn,
         post_processing_fn: PostProcessingFn,
         interaction_fn: InteractionFn,
+        # downsample_fn: Callable,
+        # upsample_fn: Callable,
         reward_fn: RewardFn,
         td_iter: Iterator[TensorDict],
         device: torch.device,
+        size_threshold: int,
     ):
         """
         Args:
@@ -65,9 +70,12 @@ class InteractiveSegmentationEnv(EnvBase):
             image_embedder_fn: function that embeds an image
             mask_fn: function that generates a new low resolution mask
             post_processing_fn: function that generates a new high resolution segmentation
+            # downsample_fn: function that can downsample both images and coordinates
+            # upsample_fn: function that can upsample both images and coordinates
             reward_fn: function that computes the reward
             dataset_iter: iterator over the dataset with batch size 1
             device: device to use
+            size_threshold: size threshold for downsampling
         """
         super().__init__(device=device, batch_size=torch.Size((1,)))  # only supported for batch size 1
 
@@ -79,15 +87,18 @@ class InteractiveSegmentationEnv(EnvBase):
         self.image_logits_fn: ImageLogitsFn = image_logits_fn
         self.post_processing_fn: PostProcessingFn = post_processing_fn
         self.interaction_fn: InteractionFn = interaction_fn
+        # self.downsample_fn: Callable = downsample_fn
+        # self.upsample_fn: Callable = upsample_fn
         self.reward_fn: RewardFn = reward_fn
         self.td_iter: Iterator[TensorDict] = td_iter
+        self.size_threshold: int = size_threshold
 
         self._make_spec()
 
     def _make_spec(self):
         self.observation_spec: TensorSpec = Composite(
             # Image has a single channel with values between 0 and 1
-            image=Bounded(
+            downsampled_image=Bounded(
                 low=0,
                 high=1,
                 shape=self.batch_size + (-1, -1, -1),
@@ -130,18 +141,18 @@ class InteractiveSegmentationEnv(EnvBase):
                 device=self.device,
             ),
             # One bbox per instance
-            boxes=Unbounded(
+            downsampled_boxes=Unbounded(
                 shape=self.batch_size + (-1,) + SINGLE_BOX_SHAPE,
                 dtype=torch.float32,
                 domain="continuous",
             ),
-            image_logits=Unbounded(
+            downsampled_image_logits=Unbounded(
                 shape=self.batch_size + (-1, -1, -1, -1),
                 dtype=torch.float32,
                 domain="continuous",
             ),
             # point_coords and point_labels are actually bounded, but we don't know the image size beforehand
-            point_coords=Unbounded(
+            downsampled_point_coords=Unbounded(
                 shape=self.batch_size
                 + (
                     -1,
@@ -216,17 +227,21 @@ class InteractiveSegmentationEnv(EnvBase):
         boxes = boxes.to(tensordict.device)
         spacing = spacing.to(tensordict.device)
 
-        image_embeddings = self.image_embedder_fn(image)
+        # Downscale everything that will be passed to the image logits model
+        self.coord_handler = VolumeTransforms(size_threshold=self.size_threshold)
+        downsampled_image, downsampled_boxes, _ = self.coord_handler.forward(volume=image, boxes=boxes)
+
+        image_embeddings = self.image_embedder_fn(downsampled_image)
 
         # Produce initial image logits and prompt embeddings
-        image_logits, prompt_embeddings = self.image_logits_fn(
+        downsampled_image_logits, prompt_embeddings = self.image_logits_fn(
             [
                 image_embeddings[0],
                 image_embeddings[1],
                 image_embeddings[2],
                 image_embeddings[3],
             ],
-            boxes if boxes.shape[0] > 0 else None,
+            downsampled_boxes if downsampled_boxes.shape[0] > 0 else None,
             None,
             None,
             None,
@@ -239,16 +254,16 @@ class InteractiveSegmentationEnv(EnvBase):
 
         td = TensorDict(
             {
-                "image": image,
+                "downsampled_image": downsampled_image,
                 "image_embedding1": image_embeddings[0],
                 "image_embedding2": image_embeddings[1],
                 "image_embedding3": image_embeddings[2],
                 "image_embedding4": image_embeddings[3],
                 "padded_prompt_embeddings": padded_prompt_embeddings,
                 "prompt_embedding_attention_mask": prompt_embedding_attention_mask,
-                "boxes": boxes,
-                "image_logits": image_logits,
-                "point_coords": torch.zeros(
+                "downsampled_boxes": downsampled_boxes,
+                "downsampled_image_logits": downsampled_image_logits,
+                "downsampled_point_coords": torch.zeros(
                     (
                         n_instances,
                         self.n_steps,
@@ -294,15 +309,16 @@ class InteractiveSegmentationEnv(EnvBase):
 
         # From now on, dimension 1 is the class instance dimension
 
-        n_instances = tensordict["image_logits"].shape[0]
+        n_instances = tensordict["downsampled_image_logits"].shape[0]
 
         # Only the first "step" points and labels have meaningful values
         step: int = tensordict["step"][0]
 
         # Multiclass segmentation, influenced by agent's "logits_to_add"
         # Needed for reward
+        image_logits = self.coord_handler.backward(tensordict["downsampled_image_logits"])
         multiclass_segmentation = image_logits_to_multiclass_segmentation(
-            tensordict["image_logits"] + tensordict["logits_to_add"].view(n_instances, 1, 1, 1),
+            image_logits + tensordict["logits_to_add"].view(n_instances, 1, 1, 1),
         )
 
         # Reward depends on multiclass segmentation and potentially on the step
@@ -313,28 +329,35 @@ class InteractiveSegmentationEnv(EnvBase):
             tensordict["spacing"],
         )
 
-        # Interaction
+        # Interaction occurs in upsampled space
         new_point_coord, new_point_label = self.interaction_fn(
-            multiclass_segmentation, tensordict["true_multiclass_segmentation"], n_instances
+            multiclass_segmentation,
+            tensordict["true_multiclass_segmentation"],
+            n_instances,
         )
+
+        # Downsample the points so they can be passed to the image logits model
+        downsampled_new_point_coord_batched = self.coord_handler.pool_coords(new_point_coord.unsqueeze(0))
+        downsampled_new_point_coord: PointCoord = downsampled_new_point_coord_batched.squeeze(0)
+
         # Add the points to the tensors
-        new_point_coords = tensordict["point_coords"].clone()
-        new_point_coords[:, [step], :] = new_point_coord
+        downsampled_new_point_coords = tensordict["downsampled_point_coords"].clone()
+        downsampled_new_point_coords[:, [step], :] = downsampled_new_point_coord
         new_point_labels = tensordict["point_labels"].clone()
         new_point_labels[:, [step]] = new_point_label
 
         # Update the mask and prompt embeddings using the new points
-        new_image_logits, new_prompt_embeddings = self.image_logits_fn(
+        downsampled_new_image_logits, new_prompt_embeddings = self.image_logits_fn(
             [
                 tensordict["image_embedding1"],
                 tensordict["image_embedding2"],
                 tensordict["image_embedding3"],
                 tensordict["image_embedding4"],
             ],
-            tensordict["boxes"] if tensordict["boxes"].shape[0] > 0 else None,
-            new_point_coords[:, : step + 1],
+            tensordict["downsampled_boxes"] if tensordict["downsampled_boxes"].shape[0] > 0 else None,
+            downsampled_new_point_coords[:, : step + 1],
             new_point_labels[:, : step + 1],
-            tensordict["image_logits"],
+            tensordict["downsampled_image_logits"],
         )
 
         # Pad prompt embeddings
@@ -352,16 +375,16 @@ class InteractiveSegmentationEnv(EnvBase):
 
         td = TensorDict(
             {
-                "image": tensordict["image"],
+                "downsampled_image": tensordict["downsampled_image"],
                 "image_embedding1": tensordict["image_embedding1"],
                 "image_embedding2": tensordict["image_embedding2"],
                 "image_embedding3": tensordict["image_embedding3"],
                 "image_embedding4": tensordict["image_embedding4"],
                 "padded_prompt_embeddings": padded_prompt_embeddings,
                 "prompt_embedding_attention_mask": prompt_embedding_attention_mask,
-                "boxes": tensordict["boxes"],
-                "image_logits": new_image_logits,
-                "point_coords": new_point_coords,
+                "downsampled_boxes": tensordict["downsampled_boxes"],
+                "downsampled_image_logits": downsampled_new_image_logits,
+                "downsampled_point_coords": downsampled_new_point_coords,
                 "point_labels": new_point_labels,
                 "step": tensordict["step"] + 1,
                 "true_multiclass_segmentation": tensordict["true_multiclass_segmentation"],
@@ -464,7 +487,7 @@ def get_post_processing_fn() -> PostProcessingFn:
     return post_processing_fn
 
 
-def get_interaction_fn() -> InteractionFn:
+def get_interaction_fn(interact_device: torch.device) -> InteractionFn:
     def interaction_fn(
         multiclass_segmentation: MulticlassSegmentation,
         true_multiclass_segmentation: MulticlassSegmentation,
@@ -480,12 +503,12 @@ def get_interaction_fn() -> InteractionFn:
             n_instances,
         )
         point_coord_list, point_label_list = interact(
-            singleclass_segmentations.unsqueeze(1).long(),
-            true_singleclass_segmentations.unsqueeze(1).long(),
+            singleclass_segmentations.unsqueeze(1).long().to(interact_device),
+            true_singleclass_segmentations.unsqueeze(1).long().to(interact_device),
         )
         # Assume that we only receive one point coord and label per batch
-        point_coord: BatchedPointCoord = torch.cat(point_coord_list, dim=0)
-        point_label: BatchedPointLabel = torch.cat(point_label_list, dim=0)
+        point_coord: BatchedPointCoord = torch.cat(point_coord_list, dim=0).to(multiclass_segmentation.device)
+        point_label: BatchedPointLabel = torch.cat(point_label_list, dim=0).to(multiclass_segmentation.device)
         return point_coord, point_label
 
     return interaction_fn
@@ -516,22 +539,30 @@ def infinite_loader(factory: Callable[[], Iterator]):
             yield elem
 
 
+# def get_downsample_fn(TODO) -> Callable:
+#     """"""
+#     def downsample_fn(*args) -> tuple[Tensor, ...]:
+
+
 def get_env(
     ahus_model: AhusModel,
     ahus_model_device: torch.device,
     env_device: torch.device,
     td_iterator_factory: Callable[[], Iterator[TensorDict]],
+    size_threshold: int,
+    interact_device: torch.device,
 ):
     env = InteractiveSegmentationEnv(
         n_steps=5,
         image_embedder_fn=get_image_embedder_fn(ahus_model, ahus_model_device, env_device=env_device),
         image_logits_fn=get_image_logits_fn(ahus_model, ahus_model_device=ahus_model_device, env_device=env_device),
         post_processing_fn=get_post_processing_fn(),
-        interaction_fn=get_interaction_fn(),
+        interaction_fn=get_interaction_fn(interact_device),
         reward_fn=get_reward_fn(),
         td_iter=infinite_loader(
             td_iterator_factory,
         ),
         device=env_device,
+        size_threshold=size_threshold,
     )
     return env

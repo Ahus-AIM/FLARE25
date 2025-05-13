@@ -11,9 +11,7 @@ from typing import Any, Dict, List, Optional
 import nibabel as nib
 import numpy as np
 import torch
-import torch.nn.functional as F
 from jaxtyping import Float, Integer
-from monai.transforms.croppad.array import DivisiblePad
 from tensordict import TensorDict
 
 from src.custom_types import (
@@ -24,194 +22,13 @@ from src.custom_types import (
     Image,
 )
 from src.model.registry import model_registry
-from src.rl.utils import pad_prompt_embeddings
-from src.submission.segmentation import Segmenter, segmenter_registry
-from src.utils.decode import decoder_forward
-
-torch.set_grad_enabled(False)
 
 # This import is needed for Agent.load to recognize subclasses
-from src.rl.agents.attention_based.ppo import AttentionPPOThresholdAgent  # noqa: E402, F401
-
-
-class VolumeTransforms:
-    def __init__(self, size_threshold: int) -> None:
-        self.size_threshold: int = size_threshold
-        self.pooling_factors: tuple[int, ...] = (1, 1, 1)
-        self.crop_slices: tuple[slice, ...] | None = None  # set in forward and used in backward
-        self.pad_values: tuple[int, ...] | None = None
-        self.orig_shape: tuple[int, ...] | None = None
-        self.cropped_shape: tuple[int, ...] | None = None
-        self.padder = DivisiblePad(k=8, method="end", value=0)
-
-    @staticmethod
-    def _normalize_volume(volume: Image) -> Image:
-        volume = volume.clone().float()
-        volume[volume <= 0] = torch.nan
-        positive_volume = volume[~torch.isnan(volume)]
-        if positive_volume.numel() == 0:
-            return torch.zeros_like(volume)
-        min_val = positive_volume.min()
-        max_val = positive_volume.max()
-        volume = (volume - min_val + 1) / (max_val - min_val + 1)
-        volume[torch.isnan(volume)] = 0
-        return volume
-
-    def _adaptive_max_pool(
-        self,
-        volume: Image,
-        boxes: Boxes,
-        point_coords: BatchedPointCoords | None,
-    ) -> tuple[Image, Boxes, BatchedPointCoords | None]:
-        shape = volume.shape  # D, H, W
-        self.pooling_factors = (1, 1, 1)
-
-        # F.max_pool3d expects channel dimension
-        volume = volume.unsqueeze(0)
-
-        while volume.numel() > self.size_threshold:
-            min_dim = int(np.argmin(shape))
-            kernel_size = tuple(1 if i == min_dim else 2 for i in range(3))
-            volume = F.max_pool3d(volume, kernel_size=kernel_size)
-            shape = volume.shape
-            self.pooling_factors = tuple(self.pooling_factors[i] * kernel_size[i] for i in range(3))
-        # Remove channel dimension
-        volume = volume.squeeze(0)
-
-        # TODO: check this
-        boxes = boxes / torch.tensor(self.pooling_factors, device=boxes.device).view(1, 3)
-        if point_coords is not None:
-            point_coords = point_coords / torch.tensor(self.pooling_factors, device=point_coords.device).view(1, 3)
-
-        return volume, boxes, point_coords
-
-    def _crop(
-        self, volume: Image, boxes: Boxes, point_coords: BatchedPointCoords | None
-    ) -> tuple[Image, Boxes, BatchedPointCoords | None]:
-        """Return cropped versions with coordinates restricted to the bounding boxes, with a margin of 16 pixels."""
-        crop_margin = 16
-
-        xmin = int(boxes[:, :, 0].min().item())
-        ymin = int(boxes[:, :, 1].min().item())
-        zmin = int(boxes[:, :, 2].min().item())
-        xmax = int(boxes[:, :, 0].max().item())
-        ymax = int(boxes[:, :, 1].max().item())
-        zmax = int(boxes[:, :, 2].max().item())
-
-        # Make sure margin is respected
-        xmin = max(0, xmin - crop_margin)
-        ymin = max(0, ymin - crop_margin)
-        zmin = max(0, zmin - crop_margin)
-        xmax = min(volume.shape[0], xmax + crop_margin)
-        ymax = min(volume.shape[1], ymax + crop_margin)
-        zmax = min(volume.shape[2], zmax + crop_margin)
-
-        cropped_volume = volume[xmin:xmax, ymin:ymax, zmin:zmax].clone()
-        self.cropped_shape = cropped_volume.shape
-        self.crop_slices = tuple([slice(xmin, xmax), slice(ymin, ymax), slice(zmin, zmax)])
-
-        cropped_boxes = boxes.clone()
-        cropped_boxes[..., 0] = boxes[..., 0] - self.crop_slices[0].start
-        cropped_boxes[..., 1] = boxes[..., 1] - self.crop_slices[1].start
-        cropped_boxes[..., 2] = boxes[..., 2] - self.crop_slices[2].start
-
-        if point_coords is not None:
-            cropped_point_coords = point_coords.clone()
-            cropped_point_coords[0][..., 0] = point_coords[0][..., 0] - self.crop_slices[0].start
-            cropped_point_coords[0][..., 1] = point_coords[0][..., 1] - self.crop_slices[1].start
-            cropped_point_coords[0][..., 2] = point_coords[0][..., 2] - self.crop_slices[2].start
-        else:
-            cropped_point_coords = None
-
-        return cropped_volume, cropped_boxes, cropped_point_coords
-
-    def _pad_divisible(self, volume: Image, k: int = 8) -> Image:
-        shape_before = volume.shape
-        # DivisiblePad expects a 4D tensor, channel first
-        padded_volume: Image = self.padder(volume.unsqueeze(0)).squeeze(0)
-        shape_after = padded_volume.shape
-        self.pad_values = tuple(shape_after[i] - shape_before[i] for i in range(3))
-        return padded_volume
-
-    def preprocess_volume(
-        self,
-        volume: Image,
-        boxes: Boxes,
-        point_coords: Optional[BatchedPointCoords] = None,
-    ) -> tuple[
-        Image,
-        Boxes,
-        Optional[BatchedPointCoords],
-    ]:
-        self.orig_shape = volume.shape
-
-        # Normalize
-        volume = self._normalize_volume(volume)
-
-        volume, boxes, point_coords = self._crop(volume, boxes, point_coords)
-
-        # Downsample with adaptive max pooling
-        volume, boxes, point_coords = self._adaptive_max_pool(volume, boxes, point_coords)
-
-        # Pad to divisible size
-        volume = self._pad_divisible(volume)
-
-        return volume, boxes, point_coords
-
-    def forward(
-        self,
-        volume: Image,
-        boxes: Boxes,
-        point_coords: Optional[BatchedPointCoords] = None,
-    ) -> tuple[
-        Image,
-        Boxes,
-        Optional[BatchedPointCoords],
-    ]:
-        volume, boxes, point_coords = self.preprocess_volume(volume, boxes, point_coords)
-
-        return volume, boxes, point_coords
-
-    def backward(self, mask_logits: BatchedImageLogits) -> BatchedImageLogits:
-        assert self.pad_values is not None, "pad_values must be set before calling backward"
-        assert self.orig_shape is not None, "orig_shape must be set before calling backward"
-        assert self.crop_slices is not None, "crop_slices must be set before calling backward"
-        assert self.cropped_shape is not None, "cropped_shape must be set before calling backward"
-
-        if self.pad_values[0] > 0:
-            mask_logits = mask_logits[:, : -self.pad_values[0], :, :]
-        if self.pad_values[1] > 0:
-            mask_logits = mask_logits[:, :, : -self.pad_values[1], :]
-        if self.pad_values[2] > 0:
-            mask_logits = mask_logits[:, :, :, : -self.pad_values[2]]
-
-        # F.interpolate expects batch dimension
-        mask_logits = F.interpolate(
-            mask_logits.unsqueeze(0),
-            size=self.cropped_shape,
-            mode="trilinear",
-            align_corners=False,
-        ).squeeze(0)
-
-        pad_sizes = []
-        for dim in range(3):
-            pad_before = self.crop_slices[dim].start
-            pad_after = self.orig_shape[dim] - self.crop_slices[dim].stop
-            pad_sizes.extend([pad_after, pad_before])  # NOTE
-        pad_sizes = pad_sizes[::-1]  # reverse for torch F.pad
-
-        mask_logits = F.pad(mask_logits, pad_sizes)
-
-        # Upsample back to original size
-        # TODO: should not be necessary?
-        mask_logits = F.interpolate(
-            mask_logits.unsqueeze(0),
-            size=self.orig_shape,
-            mode="trilinear",
-            align_corners=False,
-        ).squeeze(0)
-
-        return mask_logits
+from src.rl.agents.attention_based.ppo import AttentionPPOThresholdAgent  # noqa: F401
+from src.rl.utils import pad_prompt_embeddings
+from src.submission.segmentation import Segmenter, segmenter_registry
+from src.transform.transform import VolumeTransforms  # noqa: E402, F401
+from src.utils.decode import decoder_forward
 
 
 def safe_autocast(device_type: str):
@@ -485,13 +302,15 @@ class InferencePipeline:
 
         # Log predictions in original image space
         self.log_predictions_niigz(
-            unnormalized_volume_orig_shape.cpu().numpy(), boxes_orig_shape, multiclass_segmentation.cpu().numpy()
+            unnormalized_volume_orig_shape.cpu().numpy(),
+            boxes_orig_shape,
+            multiclass_segmentation.cpu().numpy(),
         )
 
         return multiclass_segmentation.cpu().numpy()
 
+    @staticmethod
     def log_predictions_niigz(
-        self,
         volume: np.ndarray,
         boxes: torch.Tensor,
         multiclass_segmentation: np.ndarray,
@@ -529,6 +348,7 @@ class InferencePipeline:
         nib.save(lab, boxes_path)
 
     def run(self) -> None:
+        torch.set_grad_enabled(False)
         files: List[str] = [
             f
             for f in os.listdir(self.args.load_path)

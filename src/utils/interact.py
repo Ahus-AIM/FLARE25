@@ -21,7 +21,7 @@ def interact(
             - batch_points: List of tensors, each containing a single point (1, 1, 3).
             - batch_labels: List of tensors, each containing a single label (1, 1).
     """
-    # Ensure tensors are Long and on GPU
+    # Ensure tensors are Long
     assert prediction.dtype == torch.long and gt_semantic_seg.dtype == torch.long, "Inputs must be LongTensors"
     assert prediction.shape == gt_semantic_seg.shape, "Input tensors must have the same shape"
     assert prediction.ndim == 5, "Expected input shape (B, 1, H, W, D)"

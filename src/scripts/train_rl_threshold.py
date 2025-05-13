@@ -1,5 +1,9 @@
 import argparse
+import atexit
 from pathlib import Path
+import signal
+import sys
+import time
 
 import torch
 import yaml
@@ -13,7 +17,9 @@ from torchrl.envs import (  # check_env_specs,
 from tqdm import tqdm
 
 import wandb
-from src.dataset.tensordict_npz_dataset import get_tensordict_iterator
+from src.dataset.tensordict_npz_dataset import (
+    get_td_iterator,
+)
 from src.model.registry import model_registry
 from src.rl.agents import Agent
 from src.rl.agents.attention_based.ppo import AttentionPPOThresholdAgent
@@ -22,6 +28,8 @@ from src.rl.utils import dict_to_namespace
 
 
 def main(args: argparse.Namespace) -> None:
+    torch.set_grad_enabled(True)
+
     # Load config from yaml file
     with open(args.config, "r") as file:
         config_dict: dict = yaml.safe_load(file)
@@ -41,28 +49,30 @@ def main(args: argparse.Namespace) -> None:
     ahus_model.eval()
     ahus_model.requires_grad_(False)
 
-    # td_iterator = get_tensordict_iterator(data_dir=Path(config.dataset.data_dir))
-
     train_env = get_env(
         ahus_model=ahus_model,
         ahus_model_device=config.ahus_model.device,
         env_device=config.env.device,
-        td_iterator_factory=lambda: get_tensordict_iterator(
-            val_dir=Path(config.dataset.val_dir),
-            val_gt_dir=Path(config.dataset.val_gt_dir),
+        td_iterator_factory=lambda: get_td_iterator(
+            val_dir=Path(config.dataset.train_dir),
+            val_gt_dir=Path(config.dataset.gt_dir),
         ),
+        size_threshold=config.size_threshold,
+        interact_device=config.env.interact_device,
     )
     eval_envs = [
         get_env(
             ahus_model=ahus_model,
             ahus_model_device=config.ahus_model.device,
             env_device=config.env.device,
-            td_iterator_factory=lambda: get_tensordict_iterator(
+            td_iterator_factory=lambda: get_td_iterator(
                 val_dir=Path(config.dataset.val_dir),
-                val_gt_dir=Path(config.dataset.val_gt_dir),
+                val_gt_dir=Path(config.dataset.gt_dir),
             ),
+            size_threshold=config.size_threshold,
+            interact_device=config.env.interact_device,
         )
-        for _ in range(3)
+        for _ in range(2)
     ]
 
     # Debug env manually
@@ -90,43 +100,54 @@ def main(args: argparse.Namespace) -> None:
     # We want to compare our agent to a baseline policy of never adding any logits
     def baseline_noop_policy(td: TensorDictBase) -> TensorDictBase:
         # Always choose the threshold 0.5
-        td["logits_to_add"] = torch.zeros((*td["image_logits"].shape[:-3], 1), dtype=torch.float32, device=td.device)
+        td["logits_to_add"] = torch.zeros(
+            (*td["downsampled_image_logits"].shape[:-3], 1),
+            dtype=torch.float32,
+            device=td.device,
+        )
         return td
 
     # We want to compare our agent to a baseline policy of adding too much logits
     def baseline_positive_aggressive_policy(td: TensorDictBase) -> TensorDictBase:
         # Always choose the threshold 0.5
         td["logits_to_add"] = 10 * torch.ones(
-            (*td["image_logits"].shape[:-3], 1), dtype=torch.float32, device=td.device
+            (*td["downsampled_image_logits"].shape[:-3], 1),
+            dtype=torch.float32,
+            device=td.device,
         )
         return td
 
     # We want to compare our agent to a baseline policy of adding too much logits
     def baseline_5_policy(td: TensorDictBase) -> TensorDictBase:
         # Always choose the threshold 0.5
-        td["logits_to_add"] = 5 * torch.ones((*td["image_logits"].shape[:-3], 1), dtype=torch.float32, device=td.device)
+        td["logits_to_add"] = 5 * torch.ones(
+            (*td["downsampled_image_logits"].shape[:-3], 1),
+            dtype=torch.float32,
+            device=td.device,
+        )
         return td
 
     # Debug manually
     td = train_env.reset()
     td = agent.policy(td.to(agent.device)).to(train_env.device)
     td = train_env.step(td)
-    td = td["next"]
-    td = agent.policy(td.to(agent.device)).to(train_env.device)
-    td = train_env.step(td)
+    # td = td["next"]
+    # td = agent.policy(td.to(agent.device)).to(train_env.device)
+    # td = train_env.step(td)
+    # agent.process_batch(td.to(agent.device))
 
     env_keys_to_exclude = [
-        "image",
+        "downsampled_image",
         "image_embedding1",
         "image_embedding2",
         "image_embedding3",
         "image_embedding4",
-        "multiclass_padded_prompt_embeddings",
-        "multiclass_prompt_embedding_attention_masks",
-        "boxes",
-        "multiclass_image_logits",
-        "multiclass_point_coords",
-        "multiclass_point_labels",
+        # "padded_prompt_embeddings",
+        # "prompt_embedding_attention_masks",
+        "downsampled_boxes",
+        "downsampled_image_logits",
+        "downsampled_point_coords",
+        "point_labels",
         "true_multiclass_segmentation",
     ]
     keys_to_exclude = [
@@ -177,7 +198,7 @@ def main(args: argparse.Namespace) -> None:
                 }
             )
 
-            if batch_idx % config.eval_every_n_batches == 0:
+            if batch_idx != 0 and batch_idx % config.eval_every_n_batches == 0:
                 tqdm.write("Evaluating...")
                 # Evaluate the model
                 with (
@@ -211,23 +232,25 @@ def main(args: argparse.Namespace) -> None:
                             f"eval/{k}": v
                             for k, v in (
                                 {
-                                    "reward sum": eval_td["next", "reward"].sum().item(),
-                                    "baseline noop reward sum": baseline_noop_td["next", "reward"].sum().item(),
+                                    "reward sum": eval_td["next", "reward"].cpu().sum().item(),
+                                    "baseline noop reward sum": baseline_noop_td["next", "reward"].cpu().sum().item(),
                                     # "baseline positive aggressive reward sum": baseline_positive_aggressive_td["next", "reward"].sum().item(),
                                     # "baseline 5 reward sum": baseline_5_td["next", "reward"].sum().item(),
-                                    "logits_to_add": wandb.Histogram(eval_td["logits_to_add"]),
+                                    "logits_to_add": wandb.Histogram(eval_td["logits_to_add"].cpu()),
                                 }
                                 | agent.get_eval_info()
                             ).items()
                         }
                     )
+                # Save model at the end of evaluation
+                timestamp = time.strftime("%Y%m%d-%H%M%S")
+                agent.save(Path(config.agent.save_path) / timestamp)
     except KeyboardInterrupt:
         print("Training interrupted.")
 
     # Save model
     print(f"Saving model to {config.agent.save_path}...", end="")
-    Path(config.agent.save_path).parent.mkdir(parents=True, exist_ok=True)
-    agent.save(Path(config.agent.save_path))
+    agent.save(Path(config.agent.save_path) / "last")
     print("done.")
     run.finish()
 
