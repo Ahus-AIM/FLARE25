@@ -80,12 +80,13 @@ PostProcessingFn = Callable[
     MulticlassSegmentation,
 ]
 
-# Interaction applies to instance-wise segmentation and returns
+# Interaction applies to multiclass segmentation and returns
 # one point per class.
 InteractionFn = Callable[
     [
-        BatchedSegmentation,  # predicted segmentation
-        BatchedSegmentation,  # true segmentation
+        MulticlassSegmentation,  # predicted segmentation
+        MulticlassSegmentation,  # true segmentation
+        int,  # number of instances
     ],
     tuple[BatchedPointCoord, BatchedPointLabel],  # new point and label per class
 ]

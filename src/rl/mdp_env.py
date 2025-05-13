@@ -299,13 +299,7 @@ class InteractiveSegmentationEnv(EnvBase):
         # Only the first "step" points and labels have meaningful values
         step: int = tensordict["step"][0]
 
-        # Instance-wise segmentation, influenced by agent's "logits_to_add"
-        # Needed for interaction
-        singleclass_segmentations: BatchedSegmentation = (
-            tensordict["image_logits"] + tensordict["logits_to_add"].view(n_instances, 1, 1, 1)
-        ) > 0.0
-
-        # Multiclass segmentation, also influenced by agent's "logits_to_add"
+        # Multiclass segmentation, influenced by agent's "logits_to_add"
         # Needed for reward
         multiclass_segmentation = image_logits_to_multiclass_segmentation(
             tensordict["image_logits"] + tensordict["logits_to_add"].view(n_instances, 1, 1, 1),
@@ -319,12 +313,9 @@ class InteractiveSegmentationEnv(EnvBase):
             tensordict["spacing"],
         )
 
-        # Interaction is done instance-wise, so we need to convert the true multiclass segmentation to singleclass segmentations
-        true_singleclass_segmentations = multiclass_to_singleclass_segmentations(
-            tensordict["true_multiclass_segmentation"], n_instances
-        )
+        # Interaction
         new_point_coord, new_point_label = self.interaction_fn(
-            singleclass_segmentations, true_singleclass_segmentations
+            multiclass_segmentation, tensordict["true_multiclass_segmentation"], n_instances
         )
         # Add the points to the tensors
         new_point_coords = tensordict["point_coords"].clone()
@@ -475,10 +466,19 @@ def get_post_processing_fn() -> PostProcessingFn:
 
 def get_interaction_fn() -> InteractionFn:
     def interaction_fn(
-        singleclass_segmentations: BatchedSegmentation,
-        true_singleclass_segmentations: BatchedSegmentation,
+        multiclass_segmentation: MulticlassSegmentation,
+        true_multiclass_segmentation: MulticlassSegmentation,
+        n_instances: int,
     ) -> tuple[BatchedPointCoord, BatchedPointLabel]:
-        # The interact function expects channel dimension and long dtype
+        # The interact function expects singleclass segmentations
+        singleclass_segmentations = multiclass_to_singleclass_segmentations(
+            multiclass_segmentation,
+            n_instances,
+        )
+        true_singleclass_segmentations = multiclass_to_singleclass_segmentations(
+            true_multiclass_segmentation,
+            n_instances,
+        )
         point_coord_list, point_label_list = interact(
             singleclass_segmentations.unsqueeze(1).long(),
             true_singleclass_segmentations.unsqueeze(1).long(),
