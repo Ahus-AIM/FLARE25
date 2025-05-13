@@ -13,7 +13,7 @@ def compute_multi_class_dsc_nsd(
     spacing: torch.Tensor,
     tolerance: float = 2.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    assert gt.shape == seg.shape, "Input tensors must have the same shape"
+    assert gt.shape == seg.shape, f"Input tensors must have the same shape, instead got {gt.shape} and {seg.shape}"
     assert gt.ndim == 3, "Expected input shape (H, W, D)"
     dsc = compute_multi_class_dsc(gt.cpu().numpy(), seg.cpu().numpy())
 

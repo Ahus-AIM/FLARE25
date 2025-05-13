@@ -77,11 +77,9 @@ def get_tensordict_iterator(val_dir: Path, val_gt_dir: Path) -> Iterator[TensorD
         val_data = np.load(file_path, allow_pickle=True)
         val_gt_data = np.load(val_gt_dir / file_path.name, allow_pickle=True)
 
-        # Pad the image and segmentation to be divisible by 8 and scale to [0, 1]
-        image = padder(torch.tensor(val_data["imgs"] / 255.0, dtype=torch.float32).unsqueeze(0)).squeeze(0)
-        true_multiclass_segmentation = padder(torch.tensor(val_gt_data["gts"], dtype=torch.uint8).unsqueeze(0)).squeeze(
-            0
-        )
+        # Load the image and segmentation. Scale the image to [0, 1]
+        image: Image = torch.tensor(val_data["imgs"] / 255.0, dtype=torch.float32)
+        true_multiclass_segmentation: MulticlassSegmentation = torch.tensor(val_gt_data["gts"], dtype=torch.uint8)
 
         # Boxes are originally in a dict format
         boxes = (
@@ -91,22 +89,22 @@ def get_tensordict_iterator(val_dir: Path, val_gt_dir: Path) -> Iterator[TensorD
         )
 
         # Crop the image and segmentation to the bounding boxes
-        cropped_image, cropped_true_multiclass_segmentation, cropped_boxes = crop_to_boxes(
+        image, true_multiclass_segmentation, boxes = crop_to_boxes(
             image,
             true_multiclass_segmentation,
             boxes,
         )
 
+        # Pad the image and segmentation to be divisible by 8
+        image = padder(image.unsqueeze(0)).squeeze(0)
+        true_multiclass_segmentation = padder(true_multiclass_segmentation.unsqueeze(0)).squeeze(0)
+
         yield TensorDict(
             {
-                "image": cropped_image,
-                "boxes": (
-                    dicts_to_tensor_boxes(val_data["boxes"])
-                    if "boxes" in val_data
-                    else torch.zeros((0, 2, 3), dtype=torch.int32)
-                ),
+                "image": image,
+                "boxes": boxes,
                 "spacing": torch.tensor(val_data["spacing"], dtype=torch.float32),
-                "true_multiclass_segmentation": cropped_true_multiclass_segmentation,
+                "true_multiclass_segmentation": true_multiclass_segmentation,
             },
             batch_size=(),
         )

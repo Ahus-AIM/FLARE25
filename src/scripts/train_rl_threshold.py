@@ -13,7 +13,7 @@ from torchrl.envs import (  # check_env_specs,
 from tqdm import tqdm
 
 import wandb
-from dataset.tensordict_npz_dataset import get_tensordict_iterator
+from src.dataset.tensordict_npz_dataset import get_tensordict_iterator
 from src.model.registry import model_registry
 from src.rl.agents import Agent
 from src.rl.agents.attention_based.ppo import AttentionPPOThresholdAgent
