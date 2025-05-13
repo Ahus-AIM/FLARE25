@@ -307,12 +307,14 @@ class InferencePipeline:
         return data
 
     # -------------------- Inference Helpers -------------------- #
-    def _transform(self, image3D_np: Float[np.ndarray, "D H W"]) -> Image:
+    @staticmethod
+    def _transform(image3D_np: Float[np.ndarray, "D H W"]) -> Image:
         """Returns a float image tensor of shape (D, H, W) with values in [0, 255]"""
         volume = torch.tensor(image3D_np).float()
         return volume
 
-    def _get_initial_boxes(self, data: Dict[str, Any]) -> torch.Tensor:
+    @staticmethod
+    def _get_initial_boxes(data: Dict[str, Any]) -> Boxes:
         """
         Converts the boxes from the data dictionary into a tensor format.
         """
@@ -321,7 +323,7 @@ class InferencePipeline:
         for i, box in enumerate(boxes):
             boxes_tensor[i, 0, :] = torch.tensor([box["z_min"], box["z_mid_y_min"], box["z_mid_x_min"]])
             boxes_tensor[i, 1, :] = torch.tensor([box["z_max"], box["z_mid_y_max"], box["z_mid_x_max"]])
-        return boxes_tensor.to(self.model_device)
+        return boxes_tensor
 
     def _get_points(self, data: Dict[str, Any]) -> tuple[BatchedPointCoords, BatchedPointLabels] | None:
         """
@@ -429,8 +431,8 @@ class InferencePipeline:
     def predict(self, data: dict[str, Any]) -> np.ndarray:
         """Return a multiclass segmentation."""
         # Most of the data is not in tensor format, so it needs to be converted
-        boxes_orig_shape: Boxes = self._get_initial_boxes(
-            data
+        boxes_orig_shape: Boxes = self._get_initial_boxes(data).to(
+            self.model_device
         )  # shape (I, 2, 3) where I is the number of instances in this image
         points_orig_shape = self._get_points(data)
         mask_logits = self._get_mask_logits(data)
