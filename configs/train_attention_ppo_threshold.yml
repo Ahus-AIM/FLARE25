@@ -7,7 +7,7 @@ ahus_model:
   weights_path: "weights/rope_mixed_120_accum/model_latest.pth"
 env:
   device: "cpu"
-  interact_device: "cpu"
+  interact_device: "cuda"
 total_frames: 30000
 eval_every_n_batches: 100
 eval_max_steps: 10
