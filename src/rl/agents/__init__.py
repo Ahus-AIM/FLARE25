@@ -123,6 +123,8 @@ class Agent(ABC):
 
         # Find the subclass, even if it's several layers down
         def find_subclass(base_class: type, name: str) -> type | None:
+            if base_class.__name__ == name:
+                return base_class
             for subclass in base_class.__subclasses__():
                 if subclass.__name__ == name:
                     return subclass

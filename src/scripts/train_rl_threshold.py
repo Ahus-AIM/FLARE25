@@ -1,9 +1,6 @@
 import argparse
-import atexit
-from pathlib import Path
-import signal
-import sys
 import time
+from pathlib import Path
 
 import torch
 import yaml
@@ -250,7 +247,7 @@ def main(args: argparse.Namespace) -> None:
 
     # Save model
     print(f"Saving model to {config.agent.save_path}...", end="")
-    agent.save(Path(config.agent.save_path) / "last")
+    agent.save(Path(config.agent.save_path) / "latest")
     print("done.")
     run.finish()
 

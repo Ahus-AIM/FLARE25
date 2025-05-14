@@ -2,14 +2,14 @@ from pathlib import Path
 from typing import Callable, Protocol, Self
 
 import torch
-from torch import Tensor
 from jaxtyping import Integer
 from tensordict import TensorDict
+from torch import Tensor
 
-from src.rl.agents.attention_based.ppo import AttentionPPOThresholdAgent
-from src.rl.utils import image_logits_to_multiclass_segmentation
 from src.custom_types import BatchedImageLogits, Box, Boxes, ImageLogits, PointCoords
+from src.rl.agents.attention_based.ppo import AttentionPPOThresholdAgent
 from src.rl.mdp_env import MulticlassSegmentation
+from src.rl.utils import image_logits_to_multiclass_segmentation
 
 
 class Segmenter(Protocol):
@@ -46,9 +46,7 @@ class Segmenter(Protocol):
         ...
 
 
-def add_to_logits(
-    logits: ImageLogits, box: Box, box_margin: int = 1, increment=1.0
-) -> None:
+def add_to_logits(logits: ImageLogits, box: Box, box_margin: int = 1, increment=1.0) -> None:
     """
     Adds a value to the logits in the bounding box defined by box_i. Modifies the logits in place.
     The box coordinates are inclusive, so we add 1 to the end coordinates but also ensure that they are within the bounds of the logits.
@@ -59,9 +57,7 @@ def add_to_logits(
     D, H, W = logits.shape
     box = box.clone().round().int()
     z0, y0, x0 = box[0].tolist()
-    z1, y1, x1 = torch.minimum(
-        box[1] + 1, torch.tensor([D, H, W], device=box.device)
-    ).tolist()
+    z1, y1, x1 = torch.minimum(box[1] + 1, torch.tensor([D, H, W], device=box.device)).tolist()
 
     logits[z0:z1, y0:y1, x0:x1] += increment
 
@@ -91,9 +87,7 @@ def thresholded_argmax_segmentation(
     # Writes "segmentation" key to the TensorDict
     segment_fn(td)
     # Mask out logits where the prediction is not confident
-    valid_logits = torch.where(
-        td["segmentation"], td["mask"], float("-inf")
-    )  # (N, D, H, W)
+    valid_logits = torch.where(td["segmentation"], td["mask"], float("-inf"))  # (N, D, H, W)
 
     # Add a dummy background logit (class 0)
     background = torch.zeros(1, 1, D, H, W, device=td.device)
@@ -132,12 +126,12 @@ class AttentionPPOThresholdAgentSegmenter(Segmenter):
         padded_prompt_embeddings: Tensor | None,
         prompt_embedding_attension_mask: Tensor | None,
     ) -> MulticlassSegmentation:
-        assert padded_prompt_embeddings is not None, (
-            "Padded prompt embeddings must be provided to AttentionPPOThresholdAgentSegmenter"
-        )
-        assert prompt_embedding_attension_mask is not None, (
-            "Prompt embedding attention mask must be provided to AttentionPPOThresholdAgentSegmenter"
-        )
+        assert (
+            padded_prompt_embeddings is not None
+        ), "Padded prompt embeddings must be provided to AttentionPPOThresholdAgentSegmenter"
+        assert (
+            prompt_embedding_attension_mask is not None
+        ), "Prompt embedding attention mask must be provided to AttentionPPOThresholdAgentSegmenter"
 
         n_instances = padded_prompt_embeddings.shape[0]
         # Create a tensordict in the format expected by the agent
@@ -149,10 +143,11 @@ class AttentionPPOThresholdAgentSegmenter(Segmenter):
             batch_size=(),
             device=self.device,
         )
+        # Agent expects a batch dimension
+        td = td.unsqueeze(0)
         td = self.agent.policy(td)
-        return image_logits_to_multiclass_segmentation(
-            image_logits + td["logits_to_add"].view(n_instances, 1, 1, 1)
-        )
+        td = td.squeeze(0)
+        return image_logits_to_multiclass_segmentation(image_logits + td["logits_to_add"].view(n_instances, 1, 1, 1))
 
 
 class DummySegmenter(Segmenter):
@@ -208,16 +203,18 @@ class OriginalSegmenter(Segmenter):
 
         max_iter = 10
         ensure_all_present = True
-        threshold = 0.5
+        threshold_value = 0.5
+        print("image_logits dtype:", image_logits.dtype)
+        print("threshold_value type:", type(threshold_value))
+        print("autocast is enabled:", torch.is_autocast_enabled())
+        threshold_tensor = torch.full_like(image_logits[0:1], threshold_value)
         n_instances = image_logits.shape[0]
 
         not_all_instances_present = True
         counter = 0
         while not_all_instances_present and counter < max_iter:
             pred_prob = torch.sigmoid(image_logits)
-            pred_concat = torch.cat(
-                (torch.ones_like(image_logits)[0:1] * threshold, pred_prob), dim=0
-            )
+            pred_concat = torch.cat((threshold_tensor, pred_prob), dim=0)
             pred_long = pred_concat.argmax(dim=0)
 
             if not ensure_all_present:
