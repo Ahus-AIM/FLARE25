@@ -20,6 +20,7 @@ from src.custom_types import (
     BatchedPointLabels,
     Boxes,
     Image,
+    ImageLogits,
 )
 from src.model.registry import model_registry
 
@@ -136,13 +137,21 @@ class InferencePipeline:
         Converts the boxes from the data dictionary into a tensor format.
         """
         boxes: Any = data["boxes"]
-        boxes_tensor: torch.Tensor = torch.zeros((len(boxes), 2, 3), dtype=torch.float32)
+        boxes_tensor: torch.Tensor = torch.zeros(
+            (len(boxes), 2, 3), dtype=torch.float32
+        )
         for i, box in enumerate(boxes):
-            boxes_tensor[i, 0, :] = torch.tensor([box["z_min"], box["z_mid_y_min"], box["z_mid_x_min"]])
-            boxes_tensor[i, 1, :] = torch.tensor([box["z_max"], box["z_mid_y_max"], box["z_mid_x_max"]])
+            boxes_tensor[i, 0, :] = torch.tensor(
+                [box["z_min"], box["z_mid_y_min"], box["z_mid_x_min"]]
+            )
+            boxes_tensor[i, 1, :] = torch.tensor(
+                [box["z_max"], box["z_mid_y_max"], box["z_mid_x_max"]]
+            )
         return boxes_tensor
 
-    def _get_points(self, data: Dict[str, Any]) -> tuple[BatchedPointCoords, BatchedPointLabels] | None:
+    def _get_points(
+        self, data: Dict[str, Any]
+    ) -> tuple[BatchedPointCoords, BatchedPointLabels] | None:
         """
         Converts the points from the data dictionary into a tensor format.
         """
@@ -150,8 +159,12 @@ class InferencePipeline:
             return None
 
         num_clicks: int = len(data["clicks"][0]["fg"]) + len(data["clicks"][0]["bg"])
-        point_coords: torch.Tensor = torch.zeros((len(data["clicks"]), num_clicks, 3), dtype=torch.float32)
-        point_labels: torch.Tensor = torch.zeros((len(data["clicks"]), num_clicks), dtype=torch.long)
+        point_coords: torch.Tensor = torch.zeros(
+            (len(data["clicks"]), num_clicks, 3), dtype=torch.float32
+        )
+        point_labels: torch.Tensor = torch.zeros(
+            (len(data["clicks"]), num_clicks), dtype=torch.long
+        )
 
         for i, click in enumerate(data["clicks"]):
             all_clicks: List[Any] = click["fg"] + click["bg"]
@@ -161,22 +174,26 @@ class InferencePipeline:
 
         return (point_coords.to(self.model_device), point_labels.to(self.model_device))
 
-    def _get_mask_logits(self, data: Dict[str, Any]) -> BatchedImageLogits | None:
-        mask_logits: Any = data.get("mask_logits", None)
-        if mask_logits is not None:
-            mask_logits = mask_logits.to(self.model_device)
-        return mask_logits
+    def _get_image_logits(self, data: Dict[str, Any]) -> BatchedImageLogits | None:
+        image_logits: Any = data.get("mask_logits", None)
+        if image_logits is not None:
+            image_logits = image_logits.to(self.model_device)
+        return image_logits
 
     def _get_spacing(self, data: Dict[str, Any]) -> Float[np.ndarray, "3"]:
         return np.array(data["spacing"])
 
-    def _save_mask_logits(self, mask_logits: BatchedImageLogits) -> None:
+    def _save_image_logits(self, mask_logits: BatchedImageLogits) -> None:
         parts: List[str] = self.full_file.split(os.sep)
-        mask_logits_path: str = os.sep.join(parts[:-1]) + os.sep + "mask_logits_" + parts[-1]
+        mask_logits_path: str = (
+            os.sep.join(parts[:-1]) + os.sep + "mask_logits_" + parts[-1]
+        )
         np.savez(mask_logits_path, mask_logits=mask_logits.cpu().numpy())
 
     def _load_model(self) -> torch.nn.Module:
-        model: torch.nn.Module = model_registry[self.args.model_type]().to(self.model_device)
+        model: torch.nn.Module = model_registry[self.args.model_type]().to(
+            self.model_device
+        )
         ckpt: Dict[str, Any] = torch.load(
             self.args.model_checkpoint,
             map_location=self.model_device,
@@ -188,12 +205,16 @@ class InferencePipeline:
 
     def _load_segmenter(self) -> Segmenter:
         segmenter = segmenter_registry[self.args.segmenter_type].load(
-            Path(self.args.segmenter_checkpoint) if self.args.segmenter_checkpoint is not None else None,
+            Path(self.args.segmenter_checkpoint)
+            if self.args.segmenter_checkpoint is not None
+            else None,
             torch.device(self.args.segmenter_device),
         )
         return segmenter
 
-    def _expand_image_embeddings(self, image_embeddings: List[torch.Tensor], batch_dim: int):
+    def _expand_image_embeddings(
+        self, image_embeddings: List[torch.Tensor], batch_dim: int
+    ):
         return [im_emb.repeat(batch_dim, 1, 1, 1, 1) for im_emb in image_embeddings]
 
     def _batched_decoder_inference(
@@ -217,13 +238,19 @@ class InferencePipeline:
             batch_slice = slice(i, min(i + batch_size, num_boxes))
             batch_boxes = boxes[batch_slice]
 
-            batch_image_embeddings = self._expand_image_embeddings(image_embeddings, batch_boxes.shape[0])
+            batch_image_embeddings = self._expand_image_embeddings(
+                image_embeddings, batch_boxes.shape[0]
+            )
 
             mask_logits_batch, prompt_embeddings = decoder_forward(
                 self.model,
                 batch_image_embeddings,
-                mask_logits=mask_logits[batch_slice] if mask_logits is not None else None,
-                points=tuple(p[batch_slice] for p in points) if points is not None else None,
+                mask_logits=mask_logits[batch_slice]
+                if mask_logits is not None
+                else None,
+                points=tuple(p[batch_slice] for p in points)
+                if points is not None
+                else None,
                 boxes=batch_boxes,
             )
             mask_logits_list.append(mask_logits_batch.cpu())
@@ -234,9 +261,13 @@ class InferencePipeline:
 
         return mask_logits, prompt_embeddings
 
-    def _log_model_view(self, mask_logits: torch.Tensor, volume: torch.Tensor, boxes: torch.Tensor) -> None:
+    def _log_model_view(
+        self, mask_logits: torch.Tensor, volume: torch.Tensor, boxes: torch.Tensor
+    ) -> None:
         pred_prob = torch.sigmoid(mask_logits)
-        pred_concat = torch.cat((torch.ones_like(mask_logits)[0:1] * 0.5, pred_prob), dim=0)
+        pred_concat = torch.cat(
+            (torch.ones_like(mask_logits)[0:1] * 0.5, pred_prob), dim=0
+        )
         pred_long = pred_concat.argmax(dim=0).squeeze(0)
         self.log_predictions_niigz(
             volume[0, 0].cpu().numpy(),
@@ -247,63 +278,82 @@ class InferencePipeline:
 
     def predict(self, data: dict[str, Any]) -> np.ndarray:
         """Return a multiclass segmentation."""
+
         # Most of the data is not in tensor format, so it needs to be converted
-        boxes_orig_shape: Boxes = self._get_initial_boxes(data).to(
+        boxes: Boxes = self._get_initial_boxes(data).to(
             self.model_device
         )  # shape (I, 2, 3) where I is the number of instances in this image
-        points_orig_shape = self._get_points(data)
-        mask_logits = self._get_mask_logits(data)
-        # spacing = self._get_spacing(data)
+        points = self._get_points(data)
 
-        unnormalized_volume_orig_shape = self._transform(data["imgs"]).to(self.model_device)
-        volume, boxes, point_coords = self.coord_handler.forward(
-            unnormalized_volume_orig_shape,
-            boxes_orig_shape,
-            points_orig_shape[0] if points_orig_shape is not None else None,
+        # Image logits can be saved from a previous step and are saved in a downsampled format
+        prev_downsampled_image_logits = self._get_image_logits(data)
+
+        unnormalized_volume = self._transform(data["imgs"]).to(self.model_device)
+
+        # Downsample coordinates
+        downsampled_volume, downsampled_boxes, downsampled_point_coords = (
+            self.coord_handler.forward(
+                unnormalized_volume,
+                boxes,
+                points[0] if points is not None else None,
+            )
         )
 
-        if points_orig_shape is None:
-            points = None
+        if points is None:
+            downsampled_points = None
         else:
-            assert point_coords is not None
-            points = (point_coords, points_orig_shape[1])
+            assert downsampled_point_coords is not None # for static type checking
+            point_labels = points[1]
+            downsampled_point_labels = point_labels # labels are not coordinate-dependent
+            downsampled_points = (downsampled_point_coords, downsampled_point_labels)
 
         # autocast
         # `model` assumes batch dimension
         with safe_autocast(device_type=self.model_device.split(":")[0]):
             # Batched image embeddings (1, C, D, H, W)
-            image_embeddings, _ = self.model.segresnet(volume.unsqueeze(0).unsqueeze(0))
-            # Multiclass mask_logits: (I, 1, D, H, W)
-            mask_logits, prompt_embeddings = self._batched_decoder_inference(
-                image_embeddings, mask_logits, points, boxes, batch_size=8
+            image_embeddings, _ = self.model.segresnet(
+                downsampled_volume.unsqueeze(0).unsqueeze(0)
             )
+            # Multiclass mask_logits: (I, 1, D, H, W)
+            downsampled_image_logits, prompt_embeddings = (
+                self._batched_decoder_inference(
+                    image_embeddings,
+                    prev_downsampled_image_logits.unsqueeze(1) if prev_downsampled_image_logits is not None else None,
+                    downsampled_points,
+                    downsampled_boxes,
+                    batch_size=8,
+                )
+            )
+            downsampled_image_logits = downsampled_image_logits.squeeze(1)  # (I, D, H, W)
 
-        self._log_model_view(mask_logits, volume, boxes)
-        self._save_mask_logits(mask_logits)
+        self._log_model_view(downsampled_image_logits, downsampled_volume, downsampled_boxes)
+        self._save_image_logits(downsampled_image_logits)
 
         # (n_instances, D, H, W) and now in original image space
-        mask_logits_orig_shape = self.coord_handler.backward(mask_logits.squeeze(1))
+        image_logits: BatchedImageLogits = self.coord_handler.backward(
+            downsampled_image_logits
+        )
 
         with safe_autocast(device_type=self.segmenter_device.split(":")[0]):
-            device = self.segmenter_device
-            padded_prompt_embeddings, prompt_embedding_attention_mask = pad_prompt_embeddings(
-                prompt_embeddings, self.n_clicks
+            padded_prompt_embeddings, prompt_embedding_attention_mask = (
+                pad_prompt_embeddings(prompt_embeddings, self.n_clicks)
             )
-            td = TensorDict(
-                {
-                    "multiclass_image_logits": mask_logits_orig_shape,
-                    "boxes": boxes_orig_shape,
-                    "multiclass_padded_prompt_embeddings": padded_prompt_embeddings,
-                    "multiclass_prompt_embedding_attention_mask": prompt_embedding_attention_mask,
-                },
-                device=device,
+            multiclass_segmentation = self.segmenter(
+                image_logits.to(self.segmenter_device),
+                downsampled_image_logits.to(self.segmenter_device),
+                boxes.to(self.segmenter_device),
+                downsampled_boxes.to(self.segmenter_device),
+                None,
+                None,
+                None,
+                padded_prompt_embeddings.to(self.segmenter_device),
+                prompt_embedding_attention_mask.to(self.segmenter_device),
             )
-            multiclass_segmentation = self.segmenter(td)
 
         # Log predictions in original image space
         self.log_predictions_niigz(
-            unnormalized_volume_orig_shape.cpu().numpy(),
-            boxes_orig_shape,
+            unnormalized_volume.cpu().numpy(),
+            boxes,
             multiclass_segmentation.cpu().numpy(),
         )
 
@@ -329,7 +379,9 @@ class InferencePipeline:
         img_path = os.path.join(save_dir, "img.nii.gz")
         boxes_path = os.path.join(save_dir, "boxes.nii.gz")
 
-        lab: nib.Nifti1Image = nib.Nifti1Image(multiclass_segmentation.astype(np.float32), np.eye(4))
+        lab: nib.Nifti1Image = nib.Nifti1Image(
+            multiclass_segmentation.astype(np.float32), np.eye(4)
+        )
         nib.save(lab, pred_path)
 
         img_nii: nib.Nifti1Image = nib.Nifti1Image(volume.astype(np.float32), np.eye(4))
@@ -360,14 +412,18 @@ class InferencePipeline:
         self.full_file: str = os.path.join(self.args.load_path, file_name)
 
         data: Dict[str, Any] = self.load_data()
-        binary_segmentation: Integer[np.ndarray, "image_depth image_height image_width"] = self.predict(data)
+        binary_segmentation: Integer[
+            np.ndarray, "image_depth image_height image_width"
+        ] = self.predict(data)
 
         save_file_path: str = os.path.join(self.args.save_path, file_name)
         np.savez(save_file_path, segs=binary_segmentation)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Predict multi-class segmentation of all input images in a folder.")
+    parser = argparse.ArgumentParser(
+        description="Predict multi-class segmentation of all input images in a folder."
+    )
     parser.add_argument(
         "--load_path",
         type=Path,

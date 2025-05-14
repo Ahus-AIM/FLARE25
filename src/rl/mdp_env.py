@@ -179,6 +179,11 @@ class InteractiveSegmentationEnv(EnvBase):
                 dtype=torch.int64,
                 domain="discrete",
             ),
+            multiclass_segmentation=Unbounded(
+                shape=self.batch_size + (-1, -1, -1),
+                dtype=torch.uint8,
+                domain="discrete",
+            ),
             true_multiclass_segmentation=Unbounded(
                 shape=self.batch_size + (-1, -1, -1),
                 dtype=torch.uint8,
@@ -286,6 +291,7 @@ class InteractiveSegmentationEnv(EnvBase):
                     dtype=torch.int64,
                     device=tensordict.device,
                 ),
+                "multiclass_segmentation": torch.zeros_like(true_multiclass_segmentation),
                 "true_multiclass_segmentation": true_multiclass_segmentation,
                 "spacing": spacing,
                 "done": torch.full(
@@ -387,6 +393,7 @@ class InteractiveSegmentationEnv(EnvBase):
                 "downsampled_point_coords": downsampled_new_point_coords,
                 "point_labels": new_point_labels,
                 "step": tensordict["step"] + 1,
+                "multiclass_segmentation": multiclass_segmentation,
                 "true_multiclass_segmentation": tensordict["true_multiclass_segmentation"],
                 "spacing": tensordict["spacing"],
                 "done": done,
