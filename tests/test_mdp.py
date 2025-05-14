@@ -1,6 +1,9 @@
 import torch
 
-from src.rl.utils import image_logits_to_multiclass_segmentation, multiclass_to_singleclass_segmentations
+from src.rl.utils import (
+    image_logits_to_multiclass_segmentation,
+    multiclass_to_singleclass_segmentations,
+)
 
 
 def test_image_logits_to_multiclass_segmentation():
@@ -44,11 +47,9 @@ def test_image_logits_to_multiclass_segmentation():
 def test_multiclass_to_singleclass_segmentations():
     multiclass_segmentation = torch.tensor(
         [
-            [
-                [0, 0, 0],
-                [1, 1, 2],
-                [1, 1, 2],
-            ],
+            [0, 0, 0],
+            [1, 1, 2],
+            [1, 1, 2],
         ],
         dtype=torch.long,
     )
