@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 
 import torch
+import wandb
 import yaml
 from tensordict import TensorDictBase
 from torchrl.collectors import SyncDataCollector
@@ -13,7 +14,6 @@ from torchrl.envs import (  # check_env_specs,
 )
 from tqdm import tqdm
 
-import wandb
 from src.dataset.tensordict_npz_dataset import (
     get_td_iterator,
 )
