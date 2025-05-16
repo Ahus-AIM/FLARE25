@@ -43,14 +43,12 @@ class AttentionDDPGThresholdAgent(DDPGAgent):
         )
 
     def post_init_hook(self) -> None:
-        pass
+        def optim_normalize_hook(optimizer, *args, **kwargs):
+            for module in self.backbone.modules():
+                if hasattr(module, "normalize_weights"):
+                    module.normalize_weights()
 
-        # def optim_normalize_hook(optimizer, *args, **kwargs):
-        #     for module in self.backbone.modules():
-        #         if hasattr(module, "normalize_weights"):
-        #             module.normalize_weights()
-
-        # self.optimizer.register_step_post_hook(optim_normalize_hook)
+        self.optimizer.register_step_post_hook(optim_normalize_hook)
 
     def get_state_action_value_module(self) -> TensorDictModule:
         state_action_value_net = AttentionDDPGThresholdValueNet(self.backbone_out_size)
@@ -59,7 +57,9 @@ class AttentionDDPGThresholdAgent(DDPGAgent):
             [
                 self.backbone,
                 TensorDictModule(
-                    state_action_value_net, in_keys=["backbone_out", "threshold"], out_keys=["state_action_value"]
+                    state_action_value_net,
+                    in_keys=["backbone_out", "threshold"],
+                    out_keys=["state_action_value"],
                 ),
             ]
         )
@@ -76,6 +76,9 @@ class AttentionDDPGThresholdAgent(DDPGAgent):
         )
 
         deterministic_policy_module = TensorDictSequential(
-            [self.backbone, TensorDictModule(actor_net, in_keys=["backbone_out"], out_keys=["threshold"])]
+            [
+                self.backbone,
+                TensorDictModule(actor_net, in_keys=["backbone_out"], out_keys=["threshold"]),
+            ]
         )
         return deterministic_policy_module
