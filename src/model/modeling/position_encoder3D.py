@@ -1,10 +1,11 @@
+from abc import ABC
 from typing import Any, Optional, Tuple
 
 import torch
 from torch import nn
 
 
-class PositionEncoder3D(nn.Module):
+class PositionEncoder3D(nn.Module, ABC):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 

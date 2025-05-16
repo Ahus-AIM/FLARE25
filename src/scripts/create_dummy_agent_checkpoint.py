@@ -3,7 +3,7 @@ import os
 
 import torch
 
-from src.rl.agents import PPOThresholdAgent
+from rl.agents.attention_based.ppo import PPOThresholdAgent
 
 
 def main(args: argparse.Namespace) -> None:

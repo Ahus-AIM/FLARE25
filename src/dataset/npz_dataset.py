@@ -17,6 +17,7 @@ class NPZDataset(Dataset):
         data_suffix: str = "_resampled.npz",
         load_n_first: Optional[int] = None,
         gt_dir: Optional[str] = None,
+        label_dtype=torch.uint8,
         **kwargs: Any,
     ) -> None:
         """
@@ -28,6 +29,7 @@ class NPZDataset(Dataset):
             data_suffix (str, optional): File extension to look for (default is '_resampled.npz').
             load_n_first (int, optional): If set, only load the first n files.
             gt_dir (str, optional): Optional directory where corresponding GT .npz files are stored.
+            label_dtype (torch.dtype, optional): Data type for the labels (default is torch.uint8).
             **kwargs: Additional arguments for customization.
         """
         super().__init__()
@@ -37,6 +39,7 @@ class NPZDataset(Dataset):
         self.transform: Optional[Callable] = transform
         self.data_transform: Optional[Callable] = data_transform
         self.data_suffix: str = data_suffix
+        self.label_dtype = label_dtype
         self.kwargs: Dict[str, Any] = kwargs
 
         self.file_paths, self.modalities = self._gather_data()
@@ -136,6 +139,7 @@ class NPZDataset(Dataset):
             stacked_data = self.transform(stacked_data)
 
         labeldata, imgdata = stacked_data.split(1, dim=0)
+        labeldata = labeldata.to(self.label_dtype)
 
         imgdata = imgdata.float()
         if imgdata.max() > 0:

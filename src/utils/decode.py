@@ -1,20 +1,22 @@
-import torch
-from beartype import beartype
-from beartype.typing import List, Optional, Tuple
-from jaxtyping import jaxtyped
+from src.custom_types import (
+    BatchedBox,
+    BatchedChannelImageLogits,
+    BatchedImageEmbedding,
+    BatchedImageLogits,
+    BatchedPointCoords,
+    BatchedPointLabels,
+    BatchedPromptEmbeddings,
+)
+from src.model.modeling.ahus_model import AhusModel
 
-from src.custom_types import ImageEmbedding, Mask, PointCoords, PointLabels
-from src.model.modeling import AhusModel
 
-
-@jaxtyped(typechecker=beartype)
 def decoder_forward(
     model: AhusModel,
-    image_embeddings: List[ImageEmbedding],
-    mask_logits: Mask | None = None,
-    points: Optional[Tuple[PointCoords, PointLabels]] = None,
-    boxes: Optional[torch.Tensor] = None,
-) -> tuple[Mask, torch.Tensor]:
+    image_embeddings: list[BatchedImageEmbedding],
+    mask_logits: BatchedChannelImageLogits | None = None,
+    points: tuple[BatchedPointCoords, BatchedPointLabels] | None = None,
+    boxes: BatchedBox | None = None,
+) -> tuple[BatchedImageLogits, BatchedPromptEmbeddings]:
     batch_size, _, *spatial_dims = image_embeddings[0].shape
     sparse_emb, sparse_emb_pe_term, sparse_emb_pe_factor, dense_emb = model.prompt_encoder(
         spatial_dims, points, boxes, mask_logits

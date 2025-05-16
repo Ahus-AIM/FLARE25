@@ -1,14 +1,14 @@
 import numpy as np
 import torch
-from beartype import beartype
-from beartype.typing import List, Tuple
 from cucim.core.operations import morphology
-from jaxtyping import jaxtyped
 from scipy.ndimage import distance_transform_edt
 
+from src.custom_types import BatchedChannelSegmentation, BatchedPointCoords, BatchedPointLabels
 
-@jaxtyped(typechecker=beartype)
-def interact(prediction: torch.Tensor, gt_semantic_seg: torch.Tensor) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+
+def interact(
+    prediction: BatchedChannelSegmentation, gt_semantic_seg: BatchedChannelSegmentation
+) -> tuple[list[BatchedPointCoords], list[BatchedPointLabels]]:
     """
     Get clicks using the same method as in challenge evaluation.
 
@@ -21,7 +21,7 @@ def interact(prediction: torch.Tensor, gt_semantic_seg: torch.Tensor) -> Tuple[L
             - batch_points: List of tensors, each containing a single point (1, 1, 3).
             - batch_labels: List of tensors, each containing a single label (1, 1).
     """
-    # Ensure tensors are Long and on GPU
+    # Ensure tensors are Long
     assert prediction.dtype == torch.long and gt_semantic_seg.dtype == torch.long, "Inputs must be LongTensors"
     assert prediction.shape == gt_semantic_seg.shape, "Input tensors must have the same shape"
     assert prediction.ndim == 5, "Expected input shape (B, 1, H, W, D)"
@@ -59,7 +59,7 @@ def interact(prediction: torch.Tensor, gt_semantic_seg: torch.Tensor) -> Tuple[L
     return batch_points, batch_labels
 
 
-def compute_largest_error_point(error_mask: torch.Tensor) -> Tuple[int, int, int]:
+def compute_largest_error_point(error_mask: torch.Tensor) -> tuple[int, int, int]:
     if error_mask.device.type == "cuda":
         import cupy as cp
 

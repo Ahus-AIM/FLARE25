@@ -126,43 +126,28 @@ import argparse
 import shutil
 import time
 from collections import OrderedDict
+from pathlib import Path
 
 import cc3d
 import numpy as np
 import pandas as pd
 import torch
-from jaxtyping import Integer
 from scipy import integrate
 from scipy.ndimage import distance_transform_edt
 
 from src.utils.surface_dice import (
-    compute_dice_coefficient,
-    compute_surface_dice_at_tolerance,
-    compute_surface_distances,
+    compute_multi_class_dsc,
+    compute_multi_class_nsd,
 )
 
 
-# Taken from CVPR24 challenge code with change to np.unique
-def compute_multi_class_dsc(gt: Integer[np.ndarray, "D H W"], seg: Integer[np.ndarray, "D H W"]):
-    dsc = []
-    for i in np.unique(gt)[1:]:  # skip bg
-        gt_i = gt == i
-        seg_i = seg == i
-        dsc.append(compute_dice_coefficient(gt_i, seg_i))
-    return np.mean(dsc)
+def create_empty_dir(p: Path) -> None:
+    if p.is_symlink():
+        p.unlink()  # Remove the symlink only
+    elif p.is_dir():
+        shutil.rmtree(p, ignore_errors=True)  # Recursively delete the directory
 
-
-# Taken from CVPR24 challenge code with change to np.unique
-def compute_multi_class_nsd(
-    gt: Integer[np.ndarray, "D H W"], seg: Integer[np.ndarray, "D H W"], spacing, tolerance=2.0
-):
-    nsd = []
-    for i in np.unique(gt)[1:]:  # skip bg
-        gt_i = gt == i
-        seg_i = seg == i
-        surface_distance = compute_surface_distances(gt_i, seg_i, spacing_mm=spacing)
-        nsd.append(compute_surface_dice_at_tolerance(surface_distance, tolerance))
-    return np.mean(nsd)
+    p.mkdir(parents=True, exist_ok=False)  # Create new empty directory
 
 
 parser = argparse.ArgumentParser(
@@ -177,6 +162,8 @@ parser.add_argument(
     help="testing data path",
 )
 parser.add_argument("-o", "--save_path", default="./demo_seg", type=str, help="segmentation output path")
+parser.add_argument("--input_temp", default="./inputs", type=str, help="Path to store temporary input images")
+parser.add_argument("--output_temp", default="./outputs", type=str, help="Path to store temporary output images")
 parser.add_argument(
     "-val_gts",
     "--validation_gts_path",
@@ -213,7 +200,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--segmenter_checkpoint",
-    type=str,
+    type=Path,
     required=False,  # Some segmenters do not require a checkpoint
     help="Path to saved segmenter.",
 )
@@ -223,13 +210,15 @@ parser.add_argument(
     default="cuda",
     help="Which device to run the segmenter on.",
 )
-parser.add_argument("--size_threshold", type=int, default=128**3, help="Size of the input image.")
+parser.add_argument("--size_threshold", type=int, default=256 * 128 * 128, help="Size of the input image.")
 
 
 args = parser.parse_args()
 
 test_img_path = args.test_img_path
 save_path = args.save_path
+input_temp = args.input_temp
+output_temp = args.output_temp
 validation_gts_path = args.validation_gts_path
 verbose = args.verbose
 model_type = args.model_type
@@ -240,28 +229,22 @@ segmenter_checkpoint = args.segmenter_checkpoint
 segmenter_device = args.segmenter_device
 size_threshold = args.size_threshold
 
-input_temp = "./inputs/"
-output_temp = "./outputs"
-os.makedirs(save_path, exist_ok=True)
+# Ensure that the temporary directories are empty
+create_empty_dir(Path(save_path))
+create_empty_dir(Path(input_temp))
+create_empty_dir(Path(output_temp))
+
 
 # dockers = sorted(os.listdir(docker_path))
 test_cases = sorted(os.listdir(test_img_path))
 test_cases = [case for case in test_cases if "resampled" not in case]
-
-# create temp folers for inference one-by-one
-if os.path.exists(input_temp):
-    shutil.rmtree(input_temp)
-if os.path.exists(output_temp):
-    shutil.rmtree(output_temp)
-os.makedirs(input_temp)
-os.makedirs(output_temp)
 
 # load docker and create a new folder to save segmentation results
 # teamname = docker.split(".")[0].lower()
 # print("teamname docker: ", docker)
 teamname = "ahus"
 # os.system("docker image load -i {}".format(join(docker_path, docker)))
-team_outpath = join(save_path, teamname)
+team_outpath = os.path.join(save_path, teamname)
 if os.path.exists(team_outpath):
     shutil.rmtree(team_outpath)
 os.makedirs(team_outpath)
@@ -432,7 +415,7 @@ for case in tqdm(test_cases):
 
         # This command is expected to take (D, H, W) images from one folder and write (D, H, W) segmentations (integer valued) to a different folder
         # BBoxes either need to be present in the npz file as the "boxes" key, or be in a separate file with prefix "boxes_"
-        cmd = f"python3 -m src.submission.ahus_predict --load_path {input_temp} --save_path {output_temp} --model_type {model_type} --model_checkpoint {model_checkpoint} --model_device {model_device} --segmenter_type {segmenter_type} --segmenter_checkpoint {segmenter_checkpoint} --segmenter_device {segmenter_device} --size_threshold {size_threshold}"
+        cmd = f"python3 -m src.submission.ahus_predict --load_path {input_temp} --save_path {output_temp} --model_type {model_type} --model_checkpoint {model_checkpoint} --model_device {model_device} --segmenter_type {segmenter_type} --segmenter_checkpoint {segmenter_checkpoint} --segmenter_device {segmenter_device} --size_threshold {size_threshold} --n_clicks {n_clicks}"
 
         start_time = time.time()
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)

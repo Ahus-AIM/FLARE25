@@ -28,7 +28,7 @@ from torch.backends import cudnn
 from tqdm import tqdm
 
 from src.dataset.npz_dataset import NPZDataset, create_weighted_dataset_folder_sampler, create_weighted_sampler
-from src.model.build_ahus_model import model_registry
+from src.model.registry import model_registry
 from src.utils.decode import decoder_forward
 from src.utils.interact import interact
 

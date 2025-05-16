@@ -1,12 +1,13 @@
-from functools import partial
-
 from torch import nn
 
-from .modeling import AhusModel, NormalizedMaskDecoder3D, PromptEncoder3D, SegResNetDS2
-from .modeling.position_encoder3D import LieRE, PositionEmbeddingRandom3D, PositionEncoder3D, RoPEMixed
+from src.model.modeling.ahus_model import AhusModel
+from src.model.modeling.normalized_mask_decoder3D import NormalizedMaskDecoder3D
+from src.model.modeling.position_encoder3D import PositionEncoder3D
+from src.model.modeling.prompt_encoder3D import PromptEncoder3D
+from src.model.modeling.segresnet import SegResNetDS2
 
 
-def build_ahus_model(position_encoder_class: PositionEncoder3D) -> AhusModel:
+def build_ahus_model(position_encoder_class: type[PositionEncoder3D]) -> AhusModel:
     init_filters = 16
     blocks_down: tuple = (1, 1, 2, 4)
     blocks_up: tuple = (1, 1, 1, 1)
@@ -40,12 +41,6 @@ def build_ahus_model(position_encoder_class: PositionEncoder3D) -> AhusModel:
     return model
 
 
-model_registry = {
-    "ahus_model_sinusoidal": partial(build_ahus_model, PositionEmbeddingRandom3D),
-    "ahus_model_rope_mixed": partial(build_ahus_model, RoPEMixed),
-    "ahus_model_liere": partial(build_ahus_model, LieRE),
-}
-
-if __name__ == "__main__":
-    model = model_registry["ahus_model_sinusoidal"]()
-    print(model)
+# if __name__ == "__main__":
+#     model = model_registry["ahus_model_sinusoidal"]()
+#     print(model)

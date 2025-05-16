@@ -5,163 +5,29 @@ This command is expected to take (D, H, W) images from one folder and write (D, 
 import argparse
 import os
 from contextlib import nullcontext
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import nibabel as nib
 import numpy as np
 import torch
-import torch.nn.functional as F
-from jaxtyping import Integer
-from monai.transforms import DivisiblePad
+from jaxtyping import Float, Integer
 
-from src.model.build_ahus_model import model_registry
+from src.custom_types import (
+    BatchedImageLogits,
+    BatchedPointCoords,
+    BatchedPointLabels,
+    Boxes,
+    Image,
+)
+from src.model.registry import model_registry
+
+# This import is needed for Agent.load to recognize subclasses
+from src.rl.agents.attention_based.ppo import AttentionPPOThresholdAgent  # noqa: F401
+from src.rl.utils import pad_prompt_embeddings
 from src.submission.segmentation import Segmenter, segmenter_registry
+from src.transform.transform import VolumeTransforms  # noqa: E402, F401
 from src.utils.decode import decoder_forward
-
-torch.set_grad_enabled(False)
-
-
-class VolumeTransforms:
-    def __init__(self, size_threshold: int) -> None:
-        self.size_threshold = size_threshold
-        self.pooling_factors = [1, 1, 1]
-        self.crop_slices = None
-        self.pad_values = None
-        self.orig_shape = None
-        self.cropped_shape = None
-        self.padder = DivisiblePad(k=8, method="end", value=0)
-
-    @staticmethod
-    def _normalize_volume(volume: torch.Tensor) -> torch.Tensor:
-        volume = volume.clone().float()
-        volume[volume <= 0] = torch.nan
-        positive_volume = volume[~torch.isnan(volume)]
-        if positive_volume.numel() == 0:
-            return torch.zeros_like(volume)
-        min_val = positive_volume.min()
-        max_val = positive_volume.max()
-        volume = (volume - min_val + 1) / (max_val - min_val + 1)
-        volume[torch.isnan(volume)] = 0
-        return volume
-
-    def _adaptive_max_pool(self, volume: torch.Tensor, boxes: torch.Tensor, points: torch.Tensor) -> torch.Tensor:
-        shape = list(volume.shape[2:])  # D, H, W
-        self.pooling_factors = [1, 1, 1]
-        while volume.numel() > self.size_threshold:
-            min_dim = int(np.argmin(shape))
-            kernel_size = [2, 2, 2]
-            kernel_size[min_dim] = 1
-            volume = F.max_pool3d(volume, kernel_size=kernel_size)
-            shape = list(volume.shape[2:])
-            self.pooling_factors = [self.pooling_factors[i] * kernel_size[i] for i in range(3)]
-
-        boxes = boxes / torch.tensor(self.pooling_factors, device=boxes.device).view(1, 1, 3)
-        if points is not None:
-            points[0] = points[0] / torch.tensor(self.pooling_factors, device=points[0].device).view(1, 1, 3)
-        return volume, boxes, points
-
-    def _crop_volume(self, volume: torch.Tensor, boxes: torch.tensor, points: torch.Tensor) -> torch.Tensor:
-        crop_margin = 16
-
-        xmin = int(boxes[:, :, 0].min().item())
-        ymin = int(boxes[:, :, 1].min().item())
-        zmin = int(boxes[:, :, 2].min().item())
-        xmax = int(boxes[:, :, 0].max().item())
-        ymax = int(boxes[:, :, 1].max().item())
-        zmax = int(boxes[:, :, 2].max().item())
-        xmin = max(0, xmin - crop_margin)
-        ymin = max(0, ymin - crop_margin)
-        zmin = max(0, zmin - crop_margin)
-        xmax = min(volume.shape[2], xmax + crop_margin)
-        ymax = min(volume.shape[3], ymax + crop_margin)
-        zmax = min(volume.shape[4], zmax + crop_margin)
-
-        cropped = volume[:, :, xmin:xmax, ymin:ymax, zmin:zmax]
-        self.crop_slices = [slice(xmin, xmax), slice(ymin, ymax), slice(zmin, zmax)]
-
-        boxes[..., 0] = boxes[..., 0] - self.crop_slices[0].start
-        boxes[..., 1] = boxes[..., 1] - self.crop_slices[1].start
-        boxes[..., 2] = boxes[..., 2] - self.crop_slices[2].start
-        if points is not None:
-            points[0][..., 0] = points[0][..., 0] - self.crop_slices[0].start
-            points[0][..., 1] = points[0][..., 1] - self.crop_slices[1].start
-            points[0][..., 2] = points[0][..., 2] - self.crop_slices[2].start
-
-        self.cropped_shape = cropped.shape[2:]
-
-        return cropped, boxes, points
-
-    def _pad_divisible(self, volume: torch.Tensor, k: int = 8) -> torch.Tensor:
-        shape_before = volume.shape[2:]
-        volume = self.padder(volume.squeeze(0)).unsqueeze(0)
-        shape_after = volume.shape[2:]
-        self.pad_values = [shape_after[i] - shape_before[i] for i in range(3)]
-        return volume
-
-    def preprocess_volume(self, volume: torch.Tensor, boxes: torch.Tensor, points=torch.Tensor) -> torch.Tensor:
-        volume = volume.clone()
-        # clone boxes since _crop_volume modifies them in-place
-        boxes = boxes.clone()
-
-        self.orig_shape = volume.shape[-3:]
-
-        # Normalize
-        volume = self._normalize_volume(volume)
-
-        # Crop and track slices.
-        volume, boxes, points = self._crop_volume(volume, boxes, points)
-
-        # Downsample with adaptive max pooling
-        volume, boxes, points = self._adaptive_max_pool(volume, boxes, points)
-
-        # Pad to divisible size
-        volume = self._pad_divisible(volume)
-
-        return volume, boxes, points
-
-    # def transform_coordinates(self, coords: torch.Tensor) -> torch.Tensor:
-    #     """
-    #     Returns coordinates in the cropped/pooled space.
-    #     """
-    #     coords = coords.clone()
-    #     for i in range(3):
-    #         if self.crop_slices is not None:
-    #             coords[..., i] -= self.crop_slices[i].start# / self.pooling_factors[i]
-    #         coords[..., i] = coords[..., i] / self.pooling_factors[i]
-    #     return coords
-
-    def forward(
-        self,
-        volume: torch.Tensor,
-        spacing: np.ndarray = None,
-        points: Optional[List[torch.Tensor]] = None,
-        boxes: Optional[torch.Tensor] = None,
-    ):
-        volume, boxes, points = self.preprocess_volume(volume, boxes, points)
-
-        return volume, points, boxes
-
-    def backward(self, mask_logits: torch.Tensor) -> torch.Tensor:
-        if self.pad_values[0] > 0:
-            mask_logits = mask_logits[:, :, : -self.pad_values[0], :, :]
-        if self.pad_values[1] > 0:
-            mask_logits = mask_logits[:, :, :, : -self.pad_values[1], :]
-        if self.pad_values[2] > 0:
-            mask_logits = mask_logits[:, :, :, :, : -self.pad_values[2]]
-
-        mask_logits = F.interpolate(mask_logits, size=self.cropped_shape, mode="trilinear", align_corners=False)
-
-        pad_sizes = []
-        for dim in range(3):
-            pad_before = self.crop_slices[dim].start
-            pad_after = self.orig_shape[dim] - self.crop_slices[dim].stop
-            pad_sizes.extend([pad_after, pad_before])  # NOTE
-
-        pad_sizes = pad_sizes[::-1]  # reverse for torch F.pad
-        mask_logits = F.pad(mask_logits, pad_sizes)
-
-        # Upsample back to original size
-        return F.interpolate(mask_logits, size=self.orig_shape, mode="trilinear", align_corners=False)
 
 
 def safe_autocast(device_type: str):
@@ -179,8 +45,9 @@ class InferencePipeline:
         # Model device is prioritized over segmenter device for general operations
         self.model_device: str = args.model_device
         self.segmenter_device: str = args.segmenter_device
+        self.n_clicks: int = args.n_clicks
         self.model: torch.nn.Module = self._load_model()
-        self.segmenter = self._load_segmenter()
+        self.segmenter: Segmenter = self._load_segmenter()
         self.coord_handler: VolumeTransforms = VolumeTransforms(args.size_threshold)
 
     # -------------------- Data Loading Helpers -------------------- #
@@ -238,7 +105,7 @@ class InferencePipeline:
 
     def _handle_mask_logits(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        If 'mask_logits' is present in data, override it by loading from its auxiliary file.
+        If a file with 'mask_logits_' prefix exists, use it to override mask_logits in data.
         """
         mask_logits_path: str = self._get_auxiliary_path(self.full_file, "mask_logits_")
         if os.path.exists(mask_logits_path):
@@ -256,11 +123,14 @@ class InferencePipeline:
         return data
 
     # -------------------- Inference Helpers -------------------- #
-    def _transform(self, image3D_np: np.ndarray) -> torch.Tensor:
-        volume: torch.Tensor = torch.tensor(image3D_np).float().unsqueeze(0).unsqueeze(0)
+    @staticmethod
+    def _transform(image3D_np: Float[np.ndarray, "D H W"]) -> Image:
+        """Returns a float image tensor of shape (D, H, W) with values in [0, 255]"""
+        volume = torch.tensor(image3D_np).float()
         return volume
 
-    def _get_initial_boxes(self, data: Dict[str, Any]) -> torch.Tensor:
+    @staticmethod
+    def _get_initial_boxes(data: Dict[str, Any]) -> Boxes:
         """
         Converts the boxes from the data dictionary into a tensor format.
         """
@@ -269,9 +139,9 @@ class InferencePipeline:
         for i, box in enumerate(boxes):
             boxes_tensor[i, 0, :] = torch.tensor([box["z_min"], box["z_mid_y_min"], box["z_mid_x_min"]])
             boxes_tensor[i, 1, :] = torch.tensor([box["z_max"], box["z_mid_y_max"], box["z_mid_x_max"]])
-        return boxes_tensor.to(self.model_device)
+        return boxes_tensor
 
-    def _get_points(self, data: Dict[str, Any]) -> Optional[List[torch.Tensor]]:
+    def _get_points(self, data: Dict[str, Any]) -> tuple[BatchedPointCoords, BatchedPointLabels] | None:
         """
         Converts the points from the data dictionary into a tensor format.
         """
@@ -279,27 +149,27 @@ class InferencePipeline:
             return None
 
         num_clicks: int = len(data["clicks"][0]["fg"]) + len(data["clicks"][0]["bg"])
-        points: torch.Tensor = torch.zeros((len(data["clicks"]), num_clicks, 3), dtype=torch.float32)
-        click_types: torch.Tensor = torch.zeros((len(data["clicks"]), num_clicks), dtype=torch.long)
+        point_coords: torch.Tensor = torch.zeros((len(data["clicks"]), num_clicks, 3), dtype=torch.float32)
+        point_labels: torch.Tensor = torch.zeros((len(data["clicks"]), num_clicks), dtype=torch.long)
 
         for i, click in enumerate(data["clicks"]):
             all_clicks: List[Any] = click["fg"] + click["bg"]
             for j, point in enumerate(all_clicks):
-                points[i, j, :] = torch.tensor(point)
-                click_types[i, j] = 1 if j < len(click["fg"]) else 0
+                point_coords[i, j, :] = torch.tensor(point)
+                point_labels[i, j] = 1 if j < len(click["fg"]) else 0
 
-        return [points.to(self.model_device), click_types.to(self.model_device)]
+        return (point_coords.to(self.model_device), point_labels.to(self.model_device))
 
-    def _get_mask_logits(self, data: Dict[str, Any]) -> Optional[torch.Tensor]:
-        mask_logits: Any = data.get("mask_logits", None)
-        if mask_logits is not None:
-            mask_logits = mask_logits.to(self.model_device)
-        return mask_logits
+    def _get_image_logits(self, data: Dict[str, Any]) -> BatchedImageLogits | None:
+        image_logits: Any = data.get("mask_logits", None)
+        if image_logits is not None:
+            image_logits = image_logits.to(self.model_device)
+        return image_logits
 
-    def _get_spacing(self, data: Dict[str, Any]) -> np.ndarray:
+    def _get_spacing(self, data: Dict[str, Any]) -> Float[np.ndarray, "3"]:
         return np.array(data["spacing"])
 
-    def _save_mask_logits(self, mask_logits: torch.Tensor) -> None:
+    def _save_image_logits(self, mask_logits: BatchedImageLogits) -> None:
         parts: List[str] = self.full_file.split(os.sep)
         mask_logits_path: str = os.sep.join(parts[:-1]) + os.sep + "mask_logits_" + parts[-1]
         np.savez(mask_logits_path, mask_logits=mask_logits.cpu().numpy())
@@ -307,7 +177,9 @@ class InferencePipeline:
     def _load_model(self) -> torch.nn.Module:
         model: torch.nn.Module = model_registry[self.args.model_type]().to(self.model_device)
         ckpt: Dict[str, Any] = torch.load(
-            self.args.model_checkpoint, map_location=self.model_device, weights_only=False
+            self.args.model_checkpoint,
+            map_location=self.model_device,
+            weights_only=False,
         )
         model.load_state_dict(ckpt["model_state_dict"], strict=True)
         model.eval()
@@ -315,7 +187,8 @@ class InferencePipeline:
 
     def _load_segmenter(self) -> Segmenter:
         segmenter = segmenter_registry[self.args.segmenter_type].load(
-            self.args.segmenter_checkpoint, torch.device(self.args.segmenter_device)
+            Path(self.args.segmenter_checkpoint) if self.args.segmenter_checkpoint is not None else None,
+            torch.device(self.args.segmenter_device),
         )
         return segmenter
 
@@ -326,12 +199,18 @@ class InferencePipeline:
         self,
         image_embeddings: torch.Tensor,
         mask_logits: Optional[torch.Tensor],
-        points: Optional[List[torch.Tensor]],
-        boxes: torch.Tensor,
+        points: Optional[tuple[BatchedPointCoords, BatchedPointLabels]],
+        boxes: Boxes,
         batch_size: int,
-    ) -> np.ndarray:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Returns:
+            - mask_logits: (batch_size, 1, D, H, W)
+            - prompt_embeddings: (batch_size, n_points+2, prompt_embedding_size)
+        """
         num_boxes = boxes.shape[0]
         mask_logits_list = []
+        prompt_embeddings_list = []
 
         for i in range(0, num_boxes, batch_size):
             batch_slice = slice(i, min(i + batch_size, num_boxes))
@@ -339,7 +218,7 @@ class InferencePipeline:
 
             batch_image_embeddings = self._expand_image_embeddings(image_embeddings, batch_boxes.shape[0])
 
-            mask_logits_batch, _ = decoder_forward(
+            mask_logits_batch, prompt_embeddings = decoder_forward(
                 self.model,
                 batch_image_embeddings,
                 mask_logits=mask_logits[batch_slice] if mask_logits is not None else None,
@@ -347,79 +226,113 @@ class InferencePipeline:
                 boxes=batch_boxes,
             )
             mask_logits_list.append(mask_logits_batch.cpu())
+            prompt_embeddings_list.append(prompt_embeddings.cpu())
 
         mask_logits = torch.cat(mask_logits_list, dim=0)
+        prompt_embeddings = torch.cat(prompt_embeddings_list, dim=0)
 
-        return mask_logits
+        return mask_logits, prompt_embeddings
 
-    def _log_model_view(self, mask_logits: torch.Tensor, volume: torch.tensor, boxes: torch.Tensor) -> None:
+    def _log_model_view(self, mask_logits: torch.Tensor, volume: torch.Tensor, boxes: torch.Tensor) -> None:
         pred_prob = torch.sigmoid(mask_logits)
         pred_concat = torch.cat((torch.ones_like(mask_logits)[0:1] * 0.5, pred_prob), dim=0)
         pred_long = pred_concat.argmax(dim=0).squeeze(0)
-        self.log_predictions_niigz(volume[0, 0], boxes, pred_long.squeeze(), save_dir="work_dir/inference_cropped")
+        self.log_predictions_niigz(
+            volume[0, 0].cpu().numpy(),
+            boxes,
+            pred_long.squeeze(),
+            save_dir="work_dir/inference_cropped",
+        )
 
-    def predict(self, data: Dict[str, Any]) -> np.ndarray:
+    def predict(self, data: dict[str, Any]) -> np.ndarray:
+        """Return a multiclass segmentation."""
+
         # Most of the data is not in tensor format, so it needs to be converted
-        boxes_orig_shape: torch.Tensor = self._get_initial_boxes(
-            data
+        boxes: Boxes = self._get_initial_boxes(data).to(
+            self.model_device
         )  # shape (I, 2, 3) where I is the number of instances in this image
-        points: Optional[List[torch.Tensor]] = self._get_points(data)
-        mask_logits: Optional[torch.Tensor] = self._get_mask_logits(data)
-        spacing: np.ndarray = self._get_spacing(data)
+        points = self._get_points(data)
 
-        volume_orig_shape: torch.Tensor = self._transform(data["imgs"]).to(self.model_device)  # shape (1, 1, D, H, W)
-        volume, points, boxes = self.coord_handler.forward(volume_orig_shape, spacing, points, boxes_orig_shape)
+        # Image logits can be saved from a previous step and are saved in a downsampled format
+        prev_downsampled_image_logits = self._get_image_logits(data)
+
+        unnormalized_volume = self._transform(data["imgs"]).to(self.model_device)
+
+        # Downsample coordinates
+        downsampled_volume, downsampled_boxes, downsampled_point_coords = self.coord_handler.forward(
+            unnormalized_volume,
+            boxes,
+            points[0] if points is not None else None,
+        )
+
+        if points is None:
+            downsampled_points = None
+        else:
+            assert downsampled_point_coords is not None  # for static type checking
+            point_labels = points[1]
+            downsampled_point_labels = point_labels  # labels are not coordinate-dependent
+            downsampled_points = (downsampled_point_coords, downsampled_point_labels)
 
         # autocast
         # `model` assumes batch dimension
         with safe_autocast(device_type=self.model_device.split(":")[0]):
-            # image_embeddings: list[(1, C, D, H, W)]
-            image_embeddings, _ = self.model.segresnet(volume)
-            # mask_logits: (I, 1, D, H, W)
-            mask_logits = self._batched_decoder_inference(image_embeddings, mask_logits, points, boxes, batch_size=8)
+            # Batched image embeddings (1, C, D, H, W)
+            image_embeddings, _ = self.model.segresnet(downsampled_volume.unsqueeze(0).unsqueeze(0))
+            # Multiclass mask_logits: (I, 1, D, H, W)
+            downsampled_image_logits, prompt_embeddings = self._batched_decoder_inference(
+                image_embeddings,
+                prev_downsampled_image_logits.unsqueeze(1) if prev_downsampled_image_logits is not None else None,
+                downsampled_points,
+                downsampled_boxes,
+                batch_size=8,
+            )
+            downsampled_image_logits = downsampled_image_logits.squeeze(1)  # (I, D, H, W)
 
-        self._log_model_view(mask_logits, volume, boxes)
-        self._save_mask_logits(mask_logits)
+        self._log_model_view(downsampled_image_logits, downsampled_volume, downsampled_boxes)
+        self._save_image_logits(downsampled_image_logits)
 
-        # Still (I, 1, D, H, W) but now in original image space
-        mask_logits_orig_shape = self.coord_handler.backward(mask_logits)
+        # (n_instances, D, H, W) and now in original image space
+        image_logits: BatchedImageLogits = self.coord_handler.backward(downsampled_image_logits)
 
-        # The Segmenter is responsible for converting a masks of logits to binary segmentations
-        if points is None:
-            point_coords = None
-            point_labels = None
-        else:
-            point_coords = points[0]
-            point_labels = points[1]
-
-        with safe_autocast(device_type=self.segmenter_device.split(":")[0]):
-            device = self.segmenter_device
-            binarized_pred_orig_shape: Integer[torch.Tensor, "image_depth image_height image_width"] = self.segmenter(
-                logits=mask_logits_orig_shape.to(device),  # TODO: why is this device call necessary?
-                image=volume.to(device),
-                bbox=boxes_orig_shape.to(device),
-                point_coords=point_coords.to(device) if point_coords is not None else None,
-                point_labels=point_labels.to(device) if point_labels is not None else None,
+        # with safe_autocast(device_type=self.segmenter_device.split(":")[0]):
+        with nullcontext():
+            padded_prompt_embeddings, prompt_embedding_attention_mask = pad_prompt_embeddings(
+                prompt_embeddings, self.n_clicks
+            )
+            multiclass_segmentation = self.segmenter(
+                image_logits.to(self.segmenter_device),
+                downsampled_image_logits.to(self.segmenter_device),
+                boxes.to(self.segmenter_device),
+                downsampled_boxes.to(self.segmenter_device),
+                None,
+                None,
+                None,
+                padded_prompt_embeddings.to(self.segmenter_device),
+                prompt_embedding_attention_mask.to(self.segmenter_device),
             )
 
-        # Log function expects numpy arrays without batch/channel dimension for image and segmentations
-        binarized_pred_orig_shape = binarized_pred_orig_shape.cpu().numpy()
-        volume_orig_shape = volume_orig_shape[0, 0].cpu().numpy()
-
         # Log predictions in original image space
-        self.log_predictions_niigz(volume_orig_shape, boxes_orig_shape, binarized_pred_orig_shape)
+        self.log_predictions_niigz(
+            unnormalized_volume.cpu().numpy(),
+            boxes,
+            multiclass_segmentation.cpu().numpy(),
+        )
 
-        return binarized_pred_orig_shape
+        return multiclass_segmentation.cpu().numpy()
 
+    @staticmethod
     def log_predictions_niigz(
-        self, volume: np.ndarray, boxes: torch.Tensor, binarized_pred: np.ndarray, save_dir: str = "work_dir/inference"
+        volume: np.ndarray,
+        boxes: torch.Tensor,
+        multiclass_segmentation: np.ndarray,
+        save_dir: str = "work_dir/inference",
     ) -> None:
         """
         Logs images, bboxes and binarized segmentations to NIfTI files.
 
         volume: np.ndarray[shape=(D, H, W)]
         boxes: torch.Tensor[shape=(I, 2, 3)]
-        binarized_pred: np.ndarray[shape=(D, H, W)]
+        multiclass_segmentation: np.ndarray[shape=(D, H, W)]
         """
         os.makedirs(save_dir, exist_ok=True)
 
@@ -427,13 +340,13 @@ class InferencePipeline:
         img_path = os.path.join(save_dir, "img.nii.gz")
         boxes_path = os.path.join(save_dir, "boxes.nii.gz")
 
-        lab: nib.Nifti1Image = nib.Nifti1Image(binarized_pred.astype(np.float32), np.eye(4))
+        lab: nib.Nifti1Image = nib.Nifti1Image(multiclass_segmentation.astype(np.float32), np.eye(4))
         nib.save(lab, pred_path)
 
         img_nii: nib.Nifti1Image = nib.Nifti1Image(volume.astype(np.float32), np.eye(4))
         nib.save(img_nii, img_path)
 
-        box_volume = np.zeros_like(binarized_pred)
+        box_volume = np.zeros_like(multiclass_segmentation)
         for i, box in enumerate(boxes, 1):
             box = box.round().cpu().int()
             box_volume[
@@ -446,6 +359,7 @@ class InferencePipeline:
         nib.save(lab, boxes_path)
 
     def run(self) -> None:
+        torch.set_grad_enabled(False)
         files: List[str] = [
             f
             for f in os.listdir(self.args.load_path)
@@ -465,10 +379,23 @@ class InferencePipeline:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Predict multi-class segmentation of all input images in a folder.")
-    parser.add_argument("--load_path", type=str, help="Folder path to the input image.", default="./inputs")
-    parser.add_argument("--save_path", type=str, help="Folder path to save the predictions.", default="./outputs")
     parser.add_argument(
-        "--model_type", type=str, help="Model type to use for prediction.", default="ahus_model_rope_mixed"
+        "--load_path",
+        type=Path,
+        help="Folder path to the input image.",
+        default="./inputs",
+    )
+    parser.add_argument(
+        "--save_path",
+        type=Path,
+        help="Folder path to save the predictions.",
+        default="./outputs",
+    )
+    parser.add_argument(
+        "--model_type",
+        type=str,
+        help="Model type to use for prediction.",
+        default="ahus_model_rope_mixed",
     )
     parser.add_argument(
         "--model_checkpoint",
@@ -476,7 +403,12 @@ if __name__ == "__main__":
         default="weights/rope_mixed_120_accum/model_latest.pth",
         help="Path to the model weights.",
     )
-    parser.add_argument("--model_device", type=str, default="cuda", help="Which device to run the image model on.")
+    parser.add_argument(
+        "--model_device",
+        type=str,
+        default="cuda",
+        help="Which device to run the image model on.",
+    )
     parser.add_argument(
         "--segmenter_type",
         type=str,
@@ -486,7 +418,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--segmenter_checkpoint",
-        type=str,
+        type=Path,
         required=False,  # Some segmenters do not require a checkpoint
         help="Path to saved segmenter.",
     )
@@ -496,8 +428,20 @@ if __name__ == "__main__":
         default="cuda",
         help="Which device to run the segmenter on.",
     )
-    parser.add_argument("--size_threshold", type=int, default=128**3, help="Size of the input image.")
+    parser.add_argument(
+        "--size_threshold",
+        type=int,
+        default=256 * 128 * 128,
+        help="Size of the input image.",
+    )
+    parser.add_argument(
+        "--n_clicks",
+        type=int,
+        default=5,
+        help="How many steps the inference is assumed to be used for.",
+    )
 
     args: argparse.Namespace = parser.parse_args()
+    print(args.segmenter_checkpoint, type(args.segmenter_checkpoint))
     pipeline: InferencePipeline = InferencePipeline(args)
     pipeline.run()

@@ -1,34 +1,31 @@
 import argparse
-import os
-from os.path import expandvars
+import time
+from pathlib import Path
 
 import torch
 import wandb
 import yaml
-from dotenv import load_dotenv
-from monai.transforms.croppad.array import CropForeground
+from tensordict import TensorDictBase
 from torchrl.collectors import SyncDataCollector
-from torchrl.envs import ExplorationType, set_exploration_type
+from torchrl.envs import (  # check_env_specs,
+    ExcludeTransform,
+    ExplorationType,
+    set_exploration_type,
+)
 from tqdm import tqdm
 
-from src.dataset.npz_dataset import NPZDatasetWithLongLabels
-from src.model.build_ahus_model import model_registry
-from src.rl.agents import THRESHOLD_AGENT_REGISTRY, ThresholdAgent
+from src.dataset.tensordict_npz_dataset import (
+    get_td_iterator,
+)
+from src.model.registry import model_registry
+from src.rl.agents import Agent
+from src.rl.agents.attention_based.ppo import AttentionPPOThresholdAgent
 from src.rl.mdp_env import get_env
 from src.rl.utils import dict_to_namespace
 
-print("CUDA_VISIBLE_DEVICES =", os.environ.get("CUDA_VISIBLE_DEVICES"))
-print("torch.cuda.is_available() =", torch.cuda.is_available())
-print("torch.cuda.device_count() =", torch.cuda.device_count())
 
-load_dotenv()
-
-
-def main():
-    # Use argparse to choose config file
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True)
-    args = parser.parse_args()
+def main(args: argparse.Namespace) -> None:
+    torch.set_grad_enabled(True)
 
     # Load config from yaml file
     with open(args.config, "r") as file:
@@ -41,7 +38,7 @@ def main():
 
     # Load checkpoint, assuming it is stored in the "weights" directory
     ckpt = torch.load(
-        expandvars(config.ahus_model.weights_path),
+        config.ahus_model.weights_path,
         map_location=config.ahus_model.device,
         weights_only=False,
     )
@@ -49,95 +46,220 @@ def main():
     ahus_model.eval()
     ahus_model.requires_grad_(False)
 
-    dataset = NPZDatasetWithLongLabels(
-        base_dir=expandvars(config.dataset.base_dir),
-        size_threshold=config.dataset.size_threshold,
-        transform=CropForeground(select_fn=lambda x: x > 0, k_divisible=8, allow_smaller=True),
-        data_suffix="npz",
-    )
-
-    env = get_env(
+    train_env = get_env(
         ahus_model=ahus_model,
         ahus_model_device=config.ahus_model.device,
         env_device=config.env.device,
-        dataset=dataset,
+        td_iterator_factory=lambda: get_td_iterator(
+            val_dir=Path(config.dataset.train_dir),
+            val_gt_dir=Path(config.dataset.gt_dir),
+        ),
+        size_threshold=config.size_threshold,
+        interact_device=config.env.interact_device,
     )
+    eval_envs = [
+        get_env(
+            ahus_model=ahus_model,
+            ahus_model_device=config.ahus_model.device,
+            env_device=config.env.device,
+            td_iterator_factory=lambda: get_td_iterator(
+                val_dir=Path(config.dataset.val_dir),
+                val_gt_dir=Path(config.dataset.gt_dir),
+            ),
+            size_threshold=config.size_threshold,
+            interact_device=config.env.interact_device,
+        )
+        for _ in range(2)
+    ]
 
-    # Just a test
-    td = env.reset()
-    td = env.rand_step(td)
-    td = env.rollout(100)
+    # Debug env manually
+    # td = train_env.reset()
+    # td = train_env.rand_step(td)
+    # td = td["next"]
+    # td = train_env.rand_step(td)
+    # check_env_specs(train_env)
 
-    # Static type is ThresholdAgent, dynamic type is chosen by config
-    agent_cls = THRESHOLD_AGENT_REGISTRY[config.agent.type]
-    agent: ThresholdAgent = agent_cls(
-        device=config.agent.device,
+    # Get image, should always be the same
+    # image1 = env.reset()["image"].cpu()
+    # image2 = env.reset()["image"].cpu()
+    # assert torch.equal(image1, image2), "Image should always be the same"
+
+    # agent: Agent = AttentionDDPGThresholdAgent(
+    #     action_spec=env.action_spec,
+    #     **config_dict["agent"]["kwargs"],
+    # )
+
+    agent: Agent = AttentionPPOThresholdAgent(
+        action_spec=train_env.action_spec,
         **config_dict["agent"]["kwargs"],
     )
 
+    # We want to compare our agent to a baseline policy of never adding any logits
+    def baseline_noop_policy(td: TensorDictBase) -> TensorDictBase:
+        # Always choose the threshold 0.5
+        td["logits_to_add"] = torch.zeros(
+            (*td["downsampled_image_logits"].shape[:-3], 1),
+            dtype=torch.float32,
+            device=td.device,
+        )
+        return td
+
+    # We want to compare our agent to a baseline policy of adding too much logits
+    def baseline_positive_aggressive_policy(td: TensorDictBase) -> TensorDictBase:
+        # Always choose the threshold 0.5
+        td["logits_to_add"] = 10 * torch.ones(
+            (*td["downsampled_image_logits"].shape[:-3], 1),
+            dtype=torch.float32,
+            device=td.device,
+        )
+        return td
+
+    # We want to compare our agent to a baseline policy of adding too much logits
+    def baseline_5_policy(td: TensorDictBase) -> TensorDictBase:
+        # Always choose the threshold 0.5
+        td["logits_to_add"] = 5 * torch.ones(
+            (*td["downsampled_image_logits"].shape[:-3], 1),
+            dtype=torch.float32,
+            device=td.device,
+        )
+        return td
+
+    # Debug manually
+    td = train_env.reset()
+    td = agent.policy(td.to(agent.device)).to(train_env.device)
+    td = train_env.step(td)
+    # td = td["next"]
+    # td = agent.policy(td.to(agent.device)).to(train_env.device)
+    # td = train_env.step(td)
+    # agent.process_batch(td.to(agent.device))
+
+    env_keys_to_exclude = [
+        "downsampled_image",
+        "image_embedding1",
+        "image_embedding2",
+        "image_embedding3",
+        "image_embedding4",
+        # "padded_prompt_embeddings",
+        # "prompt_embedding_attention_masks",
+        "downsampled_boxes",
+        "downsampled_image_logits",
+        "downsampled_point_coords",
+        "point_labels",
+        "true_multiclass_segmentation",
+    ]
+    keys_to_exclude = [
+        "collector",
+        *env_keys_to_exclude,
+        *(("next", k) for k in env_keys_to_exclude),
+    ]
     collector = SyncDataCollector(
-        env,
+        train_env,
         agent.policy,
         frames_per_batch=1,
         total_frames=config.total_frames,
         storing_device="cpu",  # Since we do logging anyways
-        env_device=config.env.device,
-        policy_device=config.agent.device,
-        trust_policy=True,
+        env_device=train_env.device,
+        policy_device=agent.device,
+        # trust_policy=True,
+        postproc=ExcludeTransform(*keys_to_exclude),
     )
 
-    wandb.init(
+    run = wandb.init(
         entity=config.wandb.entity,
         project=config.wandb.project,
         config=config_dict,
     )
 
+    wandb.watch(agent.backbone_net, log="gradients", log_freq=1000)
+    wandb.watch(agent.actor_net, log="gradients", log_freq=1000)
+    wandb.watch(agent.value_net, log="gradients", log_freq=1000)
+
     try:
         for batch_idx, td in tqdm(enumerate(collector), total=config.total_frames):
-            # Agent and batch dimension are collapsed
-            td = td.reshape(-1, *td.shape[2:])
-
-            loss, grad_norm = agent.process_batch(td.to(config.agent.device))
+            # Collapse agent and env batch dimensions
+            td = td.flatten(0, 1)
+            loss_info = agent.process_batch(td.to(agent.device))
 
             # Log network parameter norm
-            wandb.log(
+            run.log(
                 {
-                    "reward": td["next", "reward"].item(),
-                    "threshold": td["threshold"].item(),
-                    "step": td["step"].item(),
-                    "loss": loss,
-                    "grad_norm": grad_norm,
-                    **agent.get_info(),
+                    f"train/{k}": v
+                    for k, v in (
+                        {
+                            "reward": td["next", "reward"].item(),
+                            "step": td["step"].item(),
+                        }
+                        | loss_info
+                        | agent.get_train_info()
+                    ).items()
                 }
             )
 
-            if batch_idx % config.eval_every_n_batches == 0:
+            if batch_idx != 0 and batch_idx % config.eval_every_n_batches == 0:
+                tqdm.write("Evaluating...")
                 # Evaluate the model
                 with (
                     torch.no_grad(),
                     set_exploration_type(ExplorationType.DETERMINISTIC),
                 ):
-                    eval_td = env.rollout(max_steps=config.eval_max_steps, policy=agent.policy)
-
-                    # Move to cpu for logging
-                    eval_td = eval_td.to("cpu")
+                    eval_td = eval_envs[0].rollout(
+                        max_steps=config.eval_max_steps,
+                        policy=agent.policy,
+                        auto_cast_to_device=True,
+                    )
+                    # eval_td = eval_td.to("cpu")
+                    baseline_noop_td = eval_envs[1].rollout(
+                        max_steps=config.eval_max_steps,
+                        policy=baseline_noop_policy,
+                        auto_cast_to_device=True,
+                    )
+                    # baseline_noop_td = baseline_noop_td.to("cpu")
+                    # baseline_positive_aggressive_td = eval_env.rollout(
+                    #     max_steps=config.eval_max_steps, policy=baseline_positive_aggressive_policy, auto_cast_to_device=True
+                    # )
+                    # baseline_positive_aggressive_td = baseline_positive_aggressive_td.to("cpu")
+                    # baseline_5_td = eval_env.rollout(
+                    #     max_steps=config.eval_max_steps, policy=baseline_5_policy, auto_cast_to_device=True
+                    # )
+                    # baseline_negative_aggressive_td = baseline_negative_aggressive_td.to("cpu")
 
                     # Log evaluation results
-                    wandb.log(
+                    run.log(
                         {
-                            "eval reward": eval_td["next", "reward"].mean().item(),
-                            "eval threshold": eval_td["threshold"].mean().item(),
+                            f"eval/{k}": v
+                            for k, v in (
+                                {
+                                    "reward sum": eval_td["next", "reward"].cpu().sum().item(),
+                                    "baseline noop reward sum": baseline_noop_td["next", "reward"].cpu().sum().item(),
+                                    # "baseline positive aggressive reward sum": baseline_positive_aggressive_td["next", "reward"].sum().item(),
+                                    # "baseline 5 reward sum": baseline_5_td["next", "reward"].sum().item(),
+                                    "logits_to_add": wandb.Histogram(eval_td["logits_to_add"].cpu()),
+                                }
+                                | agent.get_eval_info()
+                            ).items()
                         }
                     )
+                # Save model at the end of evaluation
+                timestamp = time.strftime("%Y%m%d-%H%M%S")
+                agent.save(Path(config.agent.save_path) / timestamp)
     except KeyboardInterrupt:
         print("Training interrupted.")
 
     # Save model
-    print(f"Saving model to {expandvars(config.agent.save_path)}...", end="")
-    agent.save(expandvars(config.agent.save_path))
+    print(f"Saving model to {config.agent.save_path}...", end="")
+    agent.save(Path(config.agent.save_path) / "latest")
     print("done.")
-    wandb.finish()
+    run.finish()
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/train_attention_ppo_threshold.yml",
+        help="Path to the config file",
+    )
+    args = parser.parse_args()
+
+    main(args)
