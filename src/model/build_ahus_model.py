@@ -7,12 +7,12 @@ from src.model.modeling.prompt_encoder3D import PromptEncoder3D
 from src.model.modeling.segresnet import SegResNetDS2
 
 
-def build_ahus_model(position_encoder_class: type[PositionEncoder3D]) -> AhusModel:
-    init_filters = 16
+def build_ahus_model(position_encoder_class: type[PositionEncoder3D], large: bool = False) -> AhusModel:
+    init_filters = 16 if not large else 32
     blocks_down: tuple = (1, 1, 2, 4)
     blocks_up: tuple = (1, 1, 1, 1)
-    embed_dim = 128
-    num_heads = 4
+    embed_dim = 128 if not large else 256
+    num_heads = 4 if not large else 8
     segresnet = SegResNetDS2(init_filters=init_filters, blocks_down=blocks_down)
 
     position_encoder = position_encoder_class(embed_dim=embed_dim, num_heads=num_heads)

@@ -6,5 +6,6 @@ from src.model.modeling.position_encoder3D import LieRE, PositionEmbeddingRandom
 model_registry = {
     "ahus_model_sinusoidal": partial(build_ahus_model, PositionEmbeddingRandom3D),
     "ahus_model_rope_mixed": partial(build_ahus_model, RoPEMixed),
+    "ahus_model_rope_mixed_large": partial(build_ahus_model, RoPEMixed, large=True),
     "ahus_model_liere": partial(build_ahus_model, LieRE),
 }
