@@ -49,6 +49,7 @@ class InferencePipeline:
         self.model: torch.nn.Module = self._load_model()
         self.segmenter: Segmenter = self._load_segmenter()
         self.coord_handler: VolumeTransforms = VolumeTransforms(args.size_threshold)
+        self.debug: bool = args.debug
 
     # -------------------- Data Loading Helpers -------------------- #
     def _get_auxiliary_path(self, main_file: str, prefix: str) -> str:
@@ -288,7 +289,8 @@ class InferencePipeline:
             )
             downsampled_image_logits = downsampled_image_logits.squeeze(1)  # (I, D, H, W)
 
-        self._log_model_view(downsampled_image_logits, downsampled_volume, downsampled_boxes)
+        if self.debug:
+            self._log_model_view(downsampled_image_logits, downsampled_volume, downsampled_boxes)
         self._save_image_logits(downsampled_image_logits)
 
         # (n_instances, D, H, W) and now in original image space
@@ -311,12 +313,13 @@ class InferencePipeline:
                 prompt_embedding_attention_mask.to(self.segmenter_device),
             )
 
-        # Log predictions in original image space
-        self.log_predictions_niigz(
-            unnormalized_volume.cpu().numpy(),
-            boxes,
-            multiclass_segmentation.cpu().numpy(),
-        )
+        if self.debug:
+            # Log predictions in original image space
+            self.log_predictions_niigz(
+                unnormalized_volume.cpu().numpy(),
+                boxes,
+                multiclass_segmentation.cpu().numpy(),
+            )
 
         return multiclass_segmentation.cpu().numpy()
 
@@ -439,6 +442,12 @@ if __name__ == "__main__":
         type=int,
         default=5,
         help="How many steps the inference is assumed to be used for.",
+    )
+    parser.add_argument(
+        "--debug",
+        type=bool,
+        default=False,
+        help="Enable debug logging.",
     )
 
     args: argparse.Namespace = parser.parse_args()
