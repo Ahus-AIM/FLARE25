@@ -358,10 +358,11 @@ for case in tqdm(test_cases):
                         import cupy as cp
                         from cucim.core.operations import morphology
 
-                        error_mask_cp = cp.array(cropped_mask)
-                        edt_cp = morphology.distance_transform_edt(error_mask_cp)
-                        center = cp.unravel_index(cp.argmax(edt_cp), edt_cp.shape)
-                        center = np.array([int(center[0]), int(center[1]), int(center[2])])
+                        with cp.cuda.Device(0):
+                            error_mask_cp = cp.array(cropped_mask)
+                            edt_cp = morphology.distance_transform_edt(error_mask_cp)
+                            center = cp.unravel_index(cp.argmax(edt_cp), edt_cp.shape)
+                            center = np.array([int(center[0]), int(center[1]), int(center[2])])
                     else:  # CPU available only
                         edt = distance_transform_edt(cropped_mask)
                         # Find the center in the cropped mask

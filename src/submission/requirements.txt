@@ -9,3 +9,6 @@ monai==1.4.0
 tensordict==0.7.2
 torchrl==0.7.2
 beartype==0.20.2
+pyyaml==6.0.2
+cucim==23.10.0
+cupy-cuda12x==13.4.1

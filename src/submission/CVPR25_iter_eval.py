@@ -211,9 +211,10 @@ def compute_edt(error_component):
         import cupy as cp
         from cucim.core.operations import morphology
 
-        error_mask_cp = cp.array(center_crop)
-        edt_cp = morphology.distance_transform_edt(error_mask_cp, return_distances=True)
-        edt = cp.asnumpy(edt_cp)
+        with cp.cuda.Device(0):
+            error_mask_cp = cp.array(center_crop)
+            edt_cp = morphology.distance_transform_edt(error_mask_cp, return_distances=True)
+            edt = cp.asnumpy(edt_cp)
     else:  # CPU available only
         edt = distance_transform_edt(center_crop)
 
@@ -491,8 +492,9 @@ for docker in dockers:
 
                 # Model inference on the current input
                 if torch.cuda.is_available():  # GPU available
-                    cmd = 'docker container run --gpus "device=0" -m 32G --name {} --rm -v $PWD/inputs/:/workspace/inputs/ -v $PWD/outputs/:/workspace/outputs/ {}:latest /bin/bash -c "sh predict.sh" '.format(
-                        teamname.replace("/", "_"), teamname.split("_")[0]
+                    device_id = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+                    cmd = 'docker container run --gpus "device={}" -m 32G --name {} --rm -v $PWD/inputs/:/workspace/inputs/ -v $PWD/outputs/:/workspace/outputs/ {}:latest /bin/bash -c "sh predict.sh" '.format(
+                        device_id, teamname.replace("/", "_"), teamname.split("_")[0]
                     )
                 else:
                     cmd = 'docker container run -m 32G --name {} --rm -v $PWD/inputs/:/workspace/inputs/ -v $PWD/outputs/:/workspace/outputs/ {}:latest /bin/bash -c "sh predict.sh" '.format(
