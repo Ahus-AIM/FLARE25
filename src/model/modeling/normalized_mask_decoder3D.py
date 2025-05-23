@@ -379,6 +379,7 @@ class NormalizedMaskDecoder3D(nn.Module):
     def output_upscaling(self, x, x_down):
         for i, level in enumerate((self.up_layers)):
             x = level["upsample"](x)
+            x = x + x_down[i]
             x = level["blocks"](x)
 
         x = level["head"](x)
