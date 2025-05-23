@@ -151,6 +151,7 @@ class SegResEncoder(nn.Module):
 
     def _forward(self, x: torch.Tensor) -> list[torch.Tensor]:
         outputs = []
+        x = self._standardize(x)
         x = self.conv_init(x)
 
         for level in self.layers:
@@ -165,6 +166,13 @@ class SegResEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> list[torch.Tensor]:
         return self._forward(x)
+
+    def _standardize(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Standardize the input tensor to have zero mean and unit variance.
+        """
+        x = (x - x.mean()) / x.std().clamp(min=1e-5)
+        return x
 
 
 class SegResNetDS2(nn.Module):
