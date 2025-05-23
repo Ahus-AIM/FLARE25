@@ -56,8 +56,6 @@ class NPZDataset(Dataset):
             for file in files:
                 if not file.endswith(self.data_suffix):
                     continue
-                if "limb-Leg" in file or "cremi" in file or "Aorta" in file:
-                    continue
                 img_path = os.path.join(root, file)
 
                 if self.gt_dir:
@@ -87,8 +85,8 @@ class NPZDataset(Dataset):
         img_path, gt_path = self.file_paths[idx]
         try:
             img_npz = np.load(img_path, mmap_mode="r")
-        except EOFError:
-            print(f"WARNING: EOFError while loading {img_path}, skipping this file.")
+        except Exception as e:
+            print(f"WARNING: Exception while loading {img_path}, skipping this file. Error {e}")
             return self.__getitem__(np.random.randint(len(self)))
 
         if gt_path:
@@ -123,16 +121,17 @@ class NPZDataset(Dataset):
         y_min, y_max = y_indices.min().item(), y_indices.max().item()
         x_min, x_max = x_indices.min().item(), x_indices.max().item()
 
-        min_offset = 1
-        max_offset = 64
-        z_min = max(0, z_min - np.random.randint(min_offset, max_offset))
-        z_max = min(gts.shape[0] - 1, z_max + np.random.randint(min_offset, max_offset))
-        y_min = max(0, y_min - np.random.randint(min_offset, max_offset))
-        y_max = min(gts.shape[1] - 1, y_max + np.random.randint(min_offset, max_offset))
-        x_min = max(0, x_min - np.random.randint(min_offset, max_offset))
-        x_max = min(gts.shape[2] - 1, x_max + np.random.randint(min_offset, max_offset))
+        if np.random.rand() < 0.5:
+            min_offset = 1
+            max_offset = 64
+            z_min = max(0, z_min - np.random.randint(min_offset, max_offset))
+            z_max = min(gts.shape[0] - 1, z_max + np.random.randint(min_offset, max_offset))
+            y_min = max(0, y_min - np.random.randint(min_offset, max_offset))
+            y_max = min(gts.shape[1] - 1, y_max + np.random.randint(min_offset, max_offset))
+            x_min = max(0, x_min - np.random.randint(min_offset, max_offset))
+            x_max = min(gts.shape[2] - 1, x_max + np.random.randint(min_offset, max_offset))
 
-        stacked_data = stacked_data[:, z_min : z_max + 1, y_min : y_max + 1, x_min : x_max + 1]
+            stacked_data = stacked_data[:, z_min : z_max + 1, y_min : y_max + 1, x_min : x_max + 1]
 
         while (stacked_data.shape[1] * stacked_data.shape[2] * stacked_data.shape[3]) > self.size_threshold:
             max_dim_index = int(torch.argmax(torch.tensor(stacked_data.shape[1:])))
@@ -164,10 +163,10 @@ class NPZDataset(Dataset):
         def use_box():
             if "brats" in rel_path.lower():
                 return False
-            if "vessel" in rel_path.lower():
-                return False
+            # if "vessel" in rel_path.lower():
+            #     return False
             else:
-                return np.random.rand() < 0.95
+                return np.random.rand() < 1.0
 
         return {
             "image": imgdata,
