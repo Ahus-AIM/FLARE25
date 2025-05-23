@@ -87,19 +87,7 @@ class InferencePipeline:
             boxes_data: Dict[str, Any] = self._load_npz(boxes_path)
             data["boxes"] = boxes_data["boxes"]
         else:  # create a bbox covering the whole image (1 pixel margin)
-            image_shape = data["imgs"].shape
-            data["boxes"] = [
-                {
-                    # First point
-                    "z_min": 0,
-                    "z_mid_y_min": 0,
-                    "z_mid_x_min": 0,
-                    # Second point
-                    "z_max": image_shape[0] - 1,
-                    "z_mid_y_max": image_shape[1] - 1,
-                    "z_mid_x_max": image_shape[2] - 1,
-                }
-            ]
+            data["boxes"] = None
             self._save_npz(boxes_path, boxes=data["boxes"])
 
         return data
@@ -136,6 +124,8 @@ class InferencePipeline:
         Converts the boxes from the data dictionary into a tensor format.
         """
         boxes: Any = data["boxes"]
+        if boxes is None or boxes.size <= 1:
+            return None
         boxes_tensor: torch.Tensor = torch.zeros((len(boxes), 2, 3), dtype=torch.float32)
         for i, box in enumerate(boxes):
             boxes_tensor[i, 0, :] = torch.tensor([box["z_min"], box["z_mid_y_min"], box["z_mid_x_min"]])
@@ -196,6 +186,14 @@ class InferencePipeline:
     def _expand_image_embeddings(self, image_embeddings: List[torch.Tensor], batch_dim: int):
         return [im_emb.repeat(batch_dim, 1, 1, 1, 1) for im_emb in image_embeddings]
 
+    def _get_num_instances(self, points, boxes) -> int:
+        if boxes is not None and boxes.numel() > 2:
+            return boxes.shape[0]
+        elif points is not None and points[0] is not None and points[0].numel() > 0:
+            return points[0].shape[0]
+        else:
+            return 1
+
     def _batched_decoder_inference(
         self,
         image_embeddings: torch.Tensor,
@@ -209,15 +207,18 @@ class InferencePipeline:
             - mask_logits: (batch_size, 1, D, H, W)
             - prompt_embeddings: (batch_size, n_points+2, prompt_embedding_size)
         """
-        num_boxes = boxes.shape[0]
         mask_logits_list = []
         prompt_embeddings_list = []
 
-        for i in range(0, num_boxes, batch_size):
-            batch_slice = slice(i, min(i + batch_size, num_boxes))
-            batch_boxes = boxes[batch_slice]
+        num_instances = self._get_num_instances(points, boxes)
 
-            batch_image_embeddings = self._expand_image_embeddings(image_embeddings, batch_boxes.shape[0])
+        for i in range(0, num_instances, batch_size):
+            batch_slice = slice(i, min(i + batch_size, num_instances))
+            batch_num_instances = min(batch_size, num_instances - i)
+
+            batch_boxes = None if boxes is None else boxes[batch_slice]
+
+            batch_image_embeddings = self._expand_image_embeddings(image_embeddings, batch_num_instances)
 
             mask_logits_batch, prompt_embeddings = decoder_forward(
                 self.model,
@@ -239,7 +240,7 @@ class InferencePipeline:
         pred_concat = torch.cat((torch.ones_like(mask_logits)[0:1] * 0.5, pred_prob), dim=0)
         pred_long = pred_concat.argmax(dim=0).squeeze(0)
         self.log_predictions_niigz(
-            volume[0, 0].cpu().numpy(),
+            volume.cpu().numpy(),
             boxes,
             pred_long.squeeze(),
             save_dir="work_dir/inference_cropped",
@@ -249,9 +250,9 @@ class InferencePipeline:
         """Return a multiclass segmentation."""
 
         # Most of the data is not in tensor format, so it needs to be converted
-        boxes: Boxes = self._get_initial_boxes(data).to(
-            self.model_device
-        )  # shape (I, 2, 3) where I is the number of instances in this image
+        boxes: Boxes = self._get_initial_boxes(data)
+        if boxes is not None:
+            boxes = boxes.to(self.model_device)
         points = self._get_points(data)
 
         # Image logits can be saved from a previous step and are saved in a downsampled format
@@ -285,7 +286,7 @@ class InferencePipeline:
                 prev_downsampled_image_logits.unsqueeze(1) if prev_downsampled_image_logits is not None else None,
                 downsampled_points,
                 downsampled_boxes,
-                batch_size=8,
+                batch_size=2,
             )
             downsampled_image_logits = downsampled_image_logits.squeeze(1)  # (I, D, H, W)
 
@@ -304,8 +305,8 @@ class InferencePipeline:
             multiclass_segmentation = self.segmenter(
                 image_logits.to(self.segmenter_device),
                 downsampled_image_logits.to(self.segmenter_device),
-                boxes.to(self.segmenter_device),
-                downsampled_boxes.to(self.segmenter_device),
+                boxes.to(self.segmenter_device) if boxes is not None else None,
+                downsampled_boxes.to(self.segmenter_device) if downsampled_boxes is not None else None,
                 None,
                 None,
                 None,
@@ -343,20 +344,24 @@ class InferencePipeline:
         img_path = os.path.join(save_dir, "img.nii.gz")
         boxes_path = os.path.join(save_dir, "boxes.nii.gz")
 
+        os.makedirs(os.path.dirname(pred_path), exist_ok=True)
+
         lab: nib.Nifti1Image = nib.Nifti1Image(multiclass_segmentation.astype(np.float32), np.eye(4))
         nib.save(lab, pred_path)
 
+        print(volume.shape, volume.dtype, type(volume))  # 14, 112, 122 float32
         img_nii: nib.Nifti1Image = nib.Nifti1Image(volume.astype(np.float32), np.eye(4))
         nib.save(img_nii, img_path)
 
         box_volume = np.zeros_like(multiclass_segmentation)
-        for i, box in enumerate(boxes, 1):
-            box = box.round().cpu().int()
-            box_volume[
-                box[0, 0] : box[1, 0],
-                box[0, 1] : box[1, 1],
-                box[0, 2] : box[1, 2],
-            ] = i
+        if boxes is not None:
+            for i, box in enumerate(boxes, 1):
+                box = box.round().cpu().int()
+                box_volume[
+                    box[0, 0] : box[1, 0],
+                    box[0, 1] : box[1, 1],
+                    box[0, 2] : box[1, 2],
+                ] = i
 
         lab: nib.Nifti1Image = nib.Nifti1Image(box_volume.astype(np.float32), np.eye(4))
         nib.save(lab, boxes_path)
@@ -434,7 +439,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--size_threshold",
         type=int,
-        default=256 * 128 * 128,
+        default=256 * 256 * 256,
         help="Size of the input image.",
     )
     parser.add_argument(

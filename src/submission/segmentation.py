@@ -52,7 +52,6 @@ def add_to_logits(logits: ImageLogits, box: Box, box_margin: int = 1, increment=
     The box coordinates are inclusive, so we add 1 to the end coordinates but also ensure that they are within the bounds of the logits.
 
     logits: (D, H, W)
-    box_i: (2, 3) tensor with the coordinates of the bounding box
     """
     D, H, W = logits.shape
     box = box.clone().round().int()
@@ -199,7 +198,8 @@ class OriginalSegmenter(Segmenter):
         prompt_embedding_attension_mask: Tensor | None,
     ) -> MulticlassSegmentation:
         assert image_logits is not None, "Image logits must be provided to OriginalSegmenter"
-        assert boxes is not None, "Boxes must be provided to OriginalSegmenter"
+        if boxes is None:
+            boxes = torch.zeros((image_logits.shape[0], 2, 3), device=image_logits.device)
 
         max_iter = 10
         ensure_all_present = True
