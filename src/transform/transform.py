@@ -124,6 +124,8 @@ class VolumeTransforms:
         """
         Pool the boxes by dividing their coordinates by the pooling factors.
         """
+        if boxes is None:
+            return boxes
         return boxes / torch.tensor(self.pooling_factors, device=boxes.device).view(1, 3)
 
     def pool_coords(self, point_coords: BatchedPointCoords) -> BatchedPointCoords:
@@ -148,6 +150,11 @@ class VolumeTransforms:
         self, volume: Image, boxes: Boxes, point_coords: BatchedPointCoords | None
     ) -> tuple[Image, Boxes, BatchedPointCoords | None]:
         """Return cropped versions with coordinates restricted to the bounding boxes, with a margin of 16 pixels."""
+        if boxes is None:
+            self.cropped_shape = volume.shape
+            self.crop_slices = tuple(slice(0, s) for s in volume.shape)
+            return volume, boxes, point_coords
+
         crop_margin = 16
 
         xmin = int(boxes[:, :, 0].min().item())
