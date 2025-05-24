@@ -124,12 +124,33 @@ class InferencePipeline:
         Converts the boxes from the data dictionary into a tensor format.
         """
         boxes: Any = data["boxes"]
-        if boxes is None or boxes.size <= 1:
-            return None
+        if boxes is None or boxes.size < 1 or str(boxes) == "None":
+            points = data.get("clicks", None)
+            if points is not None and len(points) > 0:
+                boxes = []
+                for instance in points:
+                    foreground_points = instance.get("fg", [])
+                    first_foreground_point = foreground_points[0] if foreground_points else None
+                    if first_foreground_point is not None:
+                        # Create a box around the first foreground point
+                        boxes.append(
+                            {
+                                "z_min": max(first_foreground_point[0] - 16, 0),
+                                "z_max": first_foreground_point[0] + 16,
+                                "z_mid_y_min": max(first_foreground_point[1] - 16, 0),
+                                "z_mid_y_max": first_foreground_point[1] + 16,
+                                "z_mid_x_min": max(first_foreground_point[2] - 16, 0),
+                                "z_mid_x_max": first_foreground_point[2] + 16,
+                            }
+                        )
+                print(points)
+            else:
+                return None
         boxes_tensor: torch.Tensor = torch.zeros((len(boxes), 2, 3), dtype=torch.float32)
         for i, box in enumerate(boxes):
             boxes_tensor[i, 0, :] = torch.tensor([box["z_min"], box["z_mid_y_min"], box["z_mid_x_min"]])
             boxes_tensor[i, 1, :] = torch.tensor([box["z_max"], box["z_mid_y_max"], box["z_mid_x_max"]])
+        print(boxes)
         return boxes_tensor
 
     def _get_points(self, data: Dict[str, Any]) -> tuple[BatchedPointCoords, BatchedPointLabels] | None:
@@ -349,7 +370,6 @@ class InferencePipeline:
         lab: nib.Nifti1Image = nib.Nifti1Image(multiclass_segmentation.astype(np.float32), np.eye(4))
         nib.save(lab, pred_path)
 
-        print(volume.shape, volume.dtype, type(volume))  # 14, 112, 122 float32
         img_nii: nib.Nifti1Image = nib.Nifti1Image(volume.astype(np.float32), np.eye(4))
         nib.save(img_nii, img_path)
 
@@ -439,7 +459,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--size_threshold",
         type=int,
-        default=256 * 256 * 256,
+        default=256 * 256 * 128,
         help="Size of the input image.",
     )
     parser.add_argument(
@@ -456,6 +476,5 @@ if __name__ == "__main__":
     )
 
     args: argparse.Namespace = parser.parse_args()
-    print(args.segmenter_checkpoint, type(args.segmenter_checkpoint))
     pipeline: InferencePipeline = InferencePipeline(args)
     pipeline.run()

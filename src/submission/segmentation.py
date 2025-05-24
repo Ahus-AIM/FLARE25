@@ -201,20 +201,24 @@ class OriginalSegmenter(Segmenter):
         if boxes is None:
             boxes = torch.zeros((image_logits.shape[0], 2, 3), device=image_logits.device)
 
-        max_iter = 10
+        # ensure everything is on the CPU
+        image_logits = image_logits.cpu()
+        boxes = boxes.cpu()
+
+        max_iter = 3
         ensure_all_present = True
-        threshold_value = 0.5
-        print("image_logits dtype:", image_logits.dtype)
-        print("threshold_value type:", type(threshold_value))
-        print("autocast is enabled:", torch.is_autocast_enabled())
-        threshold_tensor = torch.full_like(image_logits[0:1], threshold_value)
+        # threshold_value = 0.5
+        # print("image_logits dtype:", image_logits.dtype)
+        # print("threshold_value type:", type(threshold_value))
+        # print("autocast is enabled:", torch.is_autocast_enabled())
+        threshold_tensor = torch.full_like(image_logits[0:1], 0.0)
         n_instances = image_logits.shape[0]
 
         not_all_instances_present = True
         counter = 0
         while not_all_instances_present and counter < max_iter:
-            pred_prob = torch.sigmoid(image_logits)
-            pred_concat = torch.cat((threshold_tensor, pred_prob), dim=0)
+            pred_concat = torch.cat((threshold_tensor, image_logits), dim=0)
+            pred_prob = torch.softmax(pred_concat, dim=0)
             pred_long = pred_concat.argmax(dim=0)
 
             if not ensure_all_present:
