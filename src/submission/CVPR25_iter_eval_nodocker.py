@@ -129,6 +129,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 import cc3d
+
 # import nibabel as nib
 import numpy as np
 import pandas as pd
