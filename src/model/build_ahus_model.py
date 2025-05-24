@@ -31,7 +31,7 @@ def build_ahus_model(position_encoder_class: type[PositionEncoder3D], large: boo
         activation=nn.SiLU,
         init_filters=init_filters,
         blocks_up=blocks_up,
-        upsample_mode="deconv",
+        upsample_mode="nontrainable",
     )
     model = AhusModel(
         segresnet=segresnet,
