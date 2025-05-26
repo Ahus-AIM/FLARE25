@@ -52,7 +52,6 @@ def add_to_logits(logits: ImageLogits, box: Box, box_margin: int = 1, increment=
     The box coordinates are inclusive, so we add 1 to the end coordinates but also ensure that they are within the bounds of the logits.
 
     logits: (D, H, W)
-    box_i: (2, 3) tensor with the coordinates of the bounding box
     """
     D, H, W = logits.shape
     box = box.clone().round().int()
@@ -199,22 +198,26 @@ class OriginalSegmenter(Segmenter):
         prompt_embedding_attension_mask: Tensor | None,
     ) -> MulticlassSegmentation:
         assert image_logits is not None, "Image logits must be provided to OriginalSegmenter"
-        assert boxes is not None, "Boxes must be provided to OriginalSegmenter"
+        if boxes is None:
+            boxes = torch.zeros((image_logits.shape[0], 2, 3), device=image_logits.device)
 
-        max_iter = 10
+        # ensure everything is on the CPU
+        image_logits = image_logits.cpu()
+        boxes = boxes.cpu()
+
+        max_iter = 3
         ensure_all_present = True
-        threshold_value = 0.5
-        print("image_logits dtype:", image_logits.dtype)
-        print("threshold_value type:", type(threshold_value))
-        print("autocast is enabled:", torch.is_autocast_enabled())
-        threshold_tensor = torch.full_like(image_logits[0:1], threshold_value)
+        # threshold_value = 0.5
+        # print("image_logits dtype:", image_logits.dtype)
+        # print("threshold_value type:", type(threshold_value))
+        # print("autocast is enabled:", torch.is_autocast_enabled())
+        threshold_tensor = torch.full_like(image_logits[0:1], 0.0)
         n_instances = image_logits.shape[0]
 
         not_all_instances_present = True
         counter = 0
         while not_all_instances_present and counter < max_iter:
-            pred_prob = torch.sigmoid(image_logits)
-            pred_concat = torch.cat((threshold_tensor, pred_prob), dim=0)
+            pred_concat = torch.cat((threshold_tensor, image_logits), dim=0)
             pred_long = pred_concat.argmax(dim=0)
 
             if not ensure_all_present:
