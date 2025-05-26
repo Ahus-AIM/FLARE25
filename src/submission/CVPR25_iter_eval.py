@@ -134,8 +134,13 @@ import pandas as pd
 import torch
 from scipy import integrate
 from scipy.ndimage import distance_transform_edt
-from SurfaceDice import compute_dice_coefficient, compute_surface_dice_at_tolerance, compute_surface_distances
 from tqdm import tqdm
+
+from src.utils.surface_dice import (
+    compute_dice_coefficient,
+    compute_surface_dice_at_tolerance,
+    compute_surface_distances,
+)
 
 
 # Taken from CVPR24 challenge code with change to np.unique
