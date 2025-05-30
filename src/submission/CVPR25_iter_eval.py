@@ -136,11 +136,7 @@ from scipy import integrate
 from scipy.ndimage import distance_transform_edt
 from tqdm import tqdm
 
-from src.utils.surface_dice import (
-    compute_dice_coefficient,
-    compute_surface_dice_at_tolerance,
-    compute_surface_distances,
-)
+from SurfaceDice import compute_dice_coefficient, compute_surface_dice_at_tolerance, compute_surface_distances
 
 
 # Taken from CVPR24 challenge code with change to np.unique
@@ -162,6 +158,11 @@ def compute_multi_class_nsd(gt, seg, spacing, tolerance=2.0):
         surface_distance = compute_surface_distances(gt_i, seg_i, spacing_mm=spacing)
         nsd.append(compute_surface_dice_at_tolerance(surface_distance, tolerance))
     return np.mean(nsd)
+
+
+def patched_np_load(*args, **kwargs):
+    with np.load(*args, **kwargs) as f:
+        return dict(f)
 
 
 def sample_coord(edt):
@@ -216,10 +217,9 @@ def compute_edt(error_component):
         import cupy as cp
         from cucim.core.operations import morphology
 
-        with cp.cuda.Device(0):
-            error_mask_cp = cp.array(center_crop)
-            edt_cp = morphology.distance_transform_edt(error_mask_cp, return_distances=True)
-            edt = cp.asnumpy(edt_cp)
+        error_mask_cp = cp.array(center_crop)
+        edt_cp = morphology.distance_transform_edt(error_mask_cp, return_distances=True)
+        edt = cp.asnumpy(edt_cp)
     else:  # CPU available only
         edt = distance_transform_edt(center_crop)
 
@@ -353,9 +353,9 @@ for docker in dockers:
             # copy input image to accumulate clicks in its dict
             shutil.copy(join(test_img_path, case), input_temp)
             if validation_gts_path is None:  # for training images
-                gts = np.load(join(input_temp, case), allow_pickle=True)["gts"]
+                gts = patched_np_load(join(input_temp, case), allow_pickle=True)["gts"]
             else:  # for validation or test images --> gts are in separate files to avoid label leakage during the course of the challenge
-                gts = np.load(join(validation_gts_path, case), allow_pickle=True)["gts"]
+                gts = patched_np_load(join(validation_gts_path, case), allow_pickle=True)["gts"]
 
             unique_gts = np.sort(pd.unique(gts.ravel()))
             num_classes = len(unique_gts) - 1
@@ -365,12 +365,12 @@ for docker in dockers:
             # foreground and background clicks for each class
             clicks_cls = [{"fg": [], "bg": []} for _ in unique_gts[1:]]  # skip background class 0
             clicks_order = [[] for _ in unique_gts[1:]]
-            if "boxes" in np.load(join(input_temp, case), allow_pickle=True).keys():
-                boxes = np.load(join(input_temp, case), allow_pickle=True)["boxes"]
+            if "boxes" in patched_np_load(join(input_temp, case), allow_pickle=True).keys():
+                boxes = patched_np_load(join(input_temp, case), allow_pickle=True)["boxes"]
 
             for it in range(n_clicks + 1):  # + 1 due to bbox pred at iteration 0
                 if it == 0:
-                    if "boxes" not in np.load(join(input_temp, case), allow_pickle=True).keys():
+                    if "boxes" not in patched_np_load(join(input_temp, case), allow_pickle=True).keys():
                         if verbose:
                             print(f"This sample does not use a Bounding Box for the initial iteration {it}")
                         no_bbox = True
@@ -386,7 +386,7 @@ for docker in dockers:
                     if verbose:
                         print(f"Using Clicks for iteration {it}")
                     if os.path.isfile(join(output_temp, case)):
-                        segs = np.load(join(output_temp, case), allow_pickle=True)["segs"].astype(
+                        segs = patched_np_load(join(output_temp, case), allow_pickle=True)["segs"].astype(
                             np.uint8
                         )  # previous prediction
                     else:
@@ -450,7 +450,7 @@ for docker in dockers:
                                 )
 
                     # update model input with new click
-                    input_img = np.load(join(input_temp, case), allow_pickle=True)
+                    input_img = patched_np_load(join(input_temp, case), allow_pickle=True)
 
                     if validation_gts_path is None:
                         if no_bbox:
@@ -497,9 +497,8 @@ for docker in dockers:
 
                 # Model inference on the current input
                 if torch.cuda.is_available():  # GPU available
-                    device_id = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
-                    cmd = 'docker container run --gpus "device={}" -m 32G --name {} --rm -v $PWD/inputs/:/workspace/inputs/ -v $PWD/outputs/:/workspace/outputs/ {}:latest /bin/bash -c "sh predict.sh" '.format(
-                        device_id, teamname.replace("/", "_"), teamname.split("_")[0]
+                    cmd = 'docker container run --gpus "device=0" -m 32G --name {} --rm -v $PWD/inputs/:/workspace/inputs/ -v $PWD/outputs/:/workspace/outputs/ {}:latest /bin/bash -c "sh predict.sh" '.format(
+                        teamname.replace("/", "_"), teamname.split("_")[0]
                     )
                 else:
                     cmd = 'docker container run -m 32G --name {} --rm -v $PWD/inputs/:/workspace/inputs/ -v $PWD/outputs/:/workspace/outputs/ {}:latest /bin/bash -c "sh predict.sh" '.format(
@@ -518,7 +517,7 @@ for docker in dockers:
                     print(f"[WARNING] Failed / Skipped prediction for iteration {it}! Setting prediction to zeros...")
                     segs = np.zeros_like(gts).astype(np.uint8)
                 else:
-                    segs = np.load(join(output_temp, case), allow_pickle=True)["segs"]
+                    segs = patched_np_load(join(output_temp, case), allow_pickle=True)["segs"]
                 all_segs.append(segs.astype(np.uint8))
 
                 dsc = compute_multi_class_dsc(gts, segs)
@@ -526,7 +525,7 @@ for docker in dockers:
                 if dsc > 0.2:
                     # only compute nsd when dice > 0.2 because NSD is also low when dice is too low
                     nsd = compute_multi_class_nsd(
-                        gts, segs, np.load(join(input_temp, case), allow_pickle=True)["spacing"]
+                        gts, segs, patched_np_load(join(input_temp, case), allow_pickle=True)["spacing"]
                     )
                 else:
                     nsd = 0.0  # Assume model performs poor on this sample
@@ -540,7 +539,7 @@ for docker in dockers:
                 # Copy temp prediction to the final folder
                 try:
                     shutil.copy(join(output_temp, seg_name), join(team_outpath, seg_name))
-                    segs = np.load(join(team_outpath, seg_name), allow_pickle=True)["segs"]
+                    segs = patched_np_load(join(team_outpath, seg_name), allow_pickle=True)["segs"]
                     np.savez_compressed(
                         join(team_outpath, seg_name),
                         segs=segs,
