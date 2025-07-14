@@ -2,6 +2,7 @@
 import logging
 import os
 import random
+import traceback
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -105,7 +106,7 @@ def plot_batch_stats():
 
 def _plot_class_stats(group, prefix):
     linestyles = ["-", "--", "-."]
-    num_colors = 10
+    num_colors = 30
     for loss_type, class_type in group.items():
         for i, (key, (value, value_idx)) in enumerate(sorted(class_type.items())):
             plt.plot(
@@ -651,7 +652,8 @@ class BaseTrainer:
                     save_niigz(image, save_path=f"{LOG_OUT_DIR}/niigz/train_image.nii.gz")
                     save_latest_niigz_files(nii_dict, f"{LOG_OUT_DIR}/niigz/train")
             except Exception as e:
-                print(f"Error during training at step {step}: {e}")
+                print(f"Error during training at step {step} for file {rel_file_path}: {e}")
+                traceback.print_exc()
                 continue
 
         epoch_loss /= step + 1
