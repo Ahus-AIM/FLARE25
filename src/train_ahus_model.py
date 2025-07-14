@@ -835,11 +835,22 @@ if __name__ == "__main__":
     parser.add_argument("--num_clicks", type=int, default=2)
     parser.add_argument("--last_click_loss_weight", type=int, default=1)
     parser.add_argument(
-        "--train_dir", type=str, default="../datasets/CVPR-BiomedSegFM/3D_train_npz_random_10percent_16G"
+        # "--train_dir", type=str, default="/home/datasets/FLARE-MedFM/FLARE-Task1-PancancerRECIST-to-3D/train_npz"
+        "--train_dir",
+        type=str,
+        default="/home/datasets/FLARE-MedFM/train",
     )
-    parser.add_argument("--val_img_dir", type=str, default="../datasets/CVPR-BiomedSegFM/3D_val_npz")
     parser.add_argument(
-        "--val_gt_dir", type=str, default="../datasets/CVPR-BiomedSegFM/3D_val_gt/3D_val_gt_interactive"
+        # "--val_img_dir", type=str, default="/home/datasets/FLARE-MedFM/FLARE-Task1-PancancerRECIST-to-3D/validation_npz"
+        "--val_img_dir",
+        type=str,
+        default="/home/datasets/FLARE-MedFM/val",
+    )
+    parser.add_argument(
+        # "--val_gt_dir", type=str, default="/home/datasets/FLARE-MedFM/FLARE-Task1-PancancerRECIST-to-3D/validation_npz"
+        "--val_gt_dir",
+        type=str,
+        default="/home/datasets/FLARE-MedFM/val",
     )
     parser.add_argument("--log_every_n_steps", type=int, default=250)
     parser.add_argument("--dry_run", action="store_true", default=False)
@@ -848,7 +859,7 @@ if __name__ == "__main__":
     parser.add_argument("--data_sampling_method", type=str, default="dataset")
 
     # train
-    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--num_workers", type=int, default=16)
     parser.add_argument("--gpu_ids", type=int, nargs="+", default=[0, 1])
     parser.add_argument("--resume", action="store_true", default=False)
     parser.add_argument("--allow_partial_weight", action="store_true", default=False)

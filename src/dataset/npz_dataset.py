@@ -4,6 +4,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
+from scipy.spatial.distance import pdist, squareform
 from torch.utils.data import Dataset, WeightedRandomSampler
 
 
@@ -102,7 +103,7 @@ class NPZDataset(Dataset):
         unique_labels = np.unique(gts.numpy().astype(np.uint16))
         unique_labels = np.sort(unique_labels)[1:]  # skip background
         if len(unique_labels) == 0:
-            print("WARNING: No positive elements in labels file, skipping this file.")
+            print(f"WARNING: No positive elements in labels file ({img_path}), skipping this file.")
             return self.__getitem__(np.random.randint(len(self)))
         try:
             selected_label = np.random.choice(unique_labels)
@@ -114,7 +115,7 @@ class NPZDataset(Dataset):
 
         z_indices, y_indices, x_indices = torch.where(labeldata)
         if z_indices.numel() == 0:
-            print("WARNING: No positive elements in selected label, skipping this file.")
+            print(f"WARNING: No positive elements in selected label ({img_path}), skipping this file.")
             return self.__getitem__(np.random.randint(len(self)))
 
         z_min, z_max = z_indices.min().item(), z_indices.max().item()
@@ -171,7 +172,8 @@ class NPZDataset(Dataset):
         return {
             "image": imgdata,
             "label": labeldata,
-            "boxes": self.get_bboxes_3D(labeldata) if use_box() else torch.zeros((2, 3)),
+            # "boxes": self.get_bboxes_3D(labeldata) if use_box() else torch.zeros((2, 3)),
+            "boxes": self.get_diameter_points(labeldata) if use_box() else torch.zeros((2, 3)),
             # "boxes": self.expanded_mask3D_to_bbox(labeldata[0], rel_path) if use_box() else torch.zeros((6, 3)),
             "spacing": spacing,
             "rel_path": rel_path,
@@ -193,6 +195,37 @@ class NPZDataset(Dataset):
         y_max = min(H - 1, y_max + bbox_shift_y)
         boxes = np.array([x_min, y_min, x_max, y_max])
         return boxes
+
+    def get_diameter_points(self, gt3D: torch.Tensor) -> torch.Tensor:
+        lesion_array = gt3D[0]  # shape: [D, H, W]
+
+        # Compute area per slice
+        area_per_slice = lesion_array.sum(dim=(1, 2))  # shape: [D]
+
+        # Find the key slice
+        key_slice_id = torch.argmax(area_per_slice)
+        largest_2D_slice = lesion_array[key_slice_id]  # shape: [H, W]
+
+        # Get non-zero pixel coordinates
+        points_2d = torch.nonzero(largest_2D_slice, as_tuple=False)  # shape: [N, 2]
+
+        if points_2d.size(0) < 2:
+            return torch.zeros((2, 3), dtype=torch.int64)  # handle edge case with dummy 3D points
+
+        # Compute pairwise distances
+        diffs = points_2d[:, None, :] - points_2d[None, :, :]  # shape: [N, N, 2]
+        dist_matrix = torch.norm(diffs.float(), dim=2)  # shape: [N, N]
+
+        # Get indices of the most distant points
+        max_diam_idx = torch.argmax(dist_matrix)
+        idx1, idx2 = divmod(max_diam_idx.item(), dist_matrix.size(1))
+
+        # Add z-dimension to each point
+        z = key_slice_id.item()
+        p1 = torch.cat([torch.tensor([z]), points_2d[idx1]])  # [z, y, x]
+        p2 = torch.cat([torch.tensor([z]), points_2d[idx2]])  # [z, y, x]
+
+        return torch.stack((p1, p2))  # shape: [2, 3]
 
     def get_bboxes_3D(self, gt3D: torch.Tensor) -> torch.Tensor:
         corners_tensor = torch.zeros((2, 3), dtype=torch.float32).to(gt3D.device)

@@ -65,7 +65,7 @@ class BoxEmbedding(nn.Module):
         boxes = boxes + 0.5  # Shift to center of pixel
         corner_embedding = torch.zeros((boxes.shape[0], boxes.shape[1], self.embed_dim), device=boxes.device)
         corner_embedding[:, 0, :] += self.box_embedding[0].weight
-        corner_embedding[:, 1, :] += self.box_embedding[1].weight
+        corner_embedding[:, 1, :] += self.box_embedding[0].weight
         return corner_embedding
 
 
@@ -85,7 +85,7 @@ class PromptEncoder3D(nn.Module):
         self.num_point_embeddings: int = 2  # pos/neg point
         self.point_embeddings = MultiClickEmbedding(embed_dim, self.num_point_embeddings)
 
-        self.num_corner_embeddings: int = 2  # box corners
+        self.num_corner_embeddings: int = 1  # box corners
         self.corner_embeddings = BoxEmbedding(embed_dim, self.num_corner_embeddings)
 
         downscale_layers = torch.log2(torch.tensor(prev_mask_downscaling_factor)).int().item()
