@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, WeightedRandomSampler
-
+from scipy.spatial import ConvexHull
 
 class NPZDataset(Dataset):
     def __init__(
@@ -18,6 +18,7 @@ class NPZDataset(Dataset):
         load_n_first: Optional[int] = None,
         gt_dir: Optional[str] = None,
         label_dtype=torch.uint8,
+        validation: bool = False,
         **kwargs: Any,
     ) -> None:
         """
@@ -41,6 +42,7 @@ class NPZDataset(Dataset):
         self.data_suffix: str = data_suffix
         self.label_dtype = label_dtype
         self.kwargs: Dict[str, Any] = kwargs
+        self.validation: bool = validation
 
         self.file_paths, self.modalities = self._gather_data()
         if load_n_first is not None:
@@ -66,6 +68,9 @@ class NPZDataset(Dataset):
                         continue
                     file_paths.append((img_path, gt_path))
                 else:
+                    if "no_name" in img_path:
+                        print(f"WARNING: Probably No GT file for {img_path}, skipping this file.")
+                        continue
                     file_paths.append((img_path, None))
 
                 parts = os.path.normpath(img_path).split(os.sep)
@@ -83,6 +88,7 @@ class NPZDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         img_path, gt_path = self.file_paths[idx]
+            
         try:
             img_npz = np.load(img_path, mmap_mode="r")
         except Exception as e:
@@ -102,10 +108,14 @@ class NPZDataset(Dataset):
         unique_labels = np.unique(gts.numpy().astype(np.uint16))
         unique_labels = np.sort(unique_labels)[1:]  # skip background
         if len(unique_labels) == 0:
-            print("WARNING: No positive elements in labels file, skipping this file.")
+            print(f"WARNING: No labels found in {img_path}, skipping this file.")
+            # print("WARNING: No positive elements in labels file, skipping this file.")
             return self.__getitem__(np.random.randint(len(self)))
         try:
-            selected_label = np.random.choice(unique_labels)
+            if self.validation:
+                selected_label = unique_labels[idx%len(unique_labels)]
+            else:
+                selected_label = np.random.choice(unique_labels)
             labeldata = gts == selected_label
             stacked_data = torch.stack([labeldata, imgs], dim=0)
         except Exception as e:
@@ -117,22 +127,30 @@ class NPZDataset(Dataset):
             print("WARNING: No positive elements in selected label, skipping this file.")
             return self.__getitem__(np.random.randint(len(self)))
 
+        rel_path = os.path.relpath(img_path, self.base_dir)
+        if "microscopy" in rel_path.lower():
+            return self.__getitem__(np.random.randint(len(self)))
+
         z_min, z_max = z_indices.min().item(), z_indices.max().item()
         y_min, y_max = y_indices.min().item(), y_indices.max().item()
         x_min, x_max = x_indices.min().item(), x_indices.max().item()
 
-        if np.random.rand() < 0.5:
+        # if np.random.rand() < 0.5:
+        if self.validation:
+            min_offset = 32
+            max_offset = 33
+        else:
             min_offset = 1
             max_offset = 64
-            z_min = max(0, z_min - np.random.randint(min_offset, max_offset))
-            z_max = min(gts.shape[0] - 1, z_max + np.random.randint(min_offset, max_offset))
-            y_min = max(0, y_min - np.random.randint(min_offset, max_offset))
-            y_max = min(gts.shape[1] - 1, y_max + np.random.randint(min_offset, max_offset))
-            x_min = max(0, x_min - np.random.randint(min_offset, max_offset))
-            x_max = min(gts.shape[2] - 1, x_max + np.random.randint(min_offset, max_offset))
+        z_min = max(0, z_min - np.random.randint(min_offset, max_offset))
+        z_max = min(gts.shape[0] - 1, z_max + np.random.randint(min_offset, max_offset))
+        y_min = max(0, y_min - np.random.randint(min_offset, max_offset))
+        y_max = min(gts.shape[1] - 1, y_max + np.random.randint(min_offset, max_offset))
+        x_min = max(0, x_min - np.random.randint(min_offset, max_offset))
+        x_max = min(gts.shape[2] - 1, x_max + np.random.randint(min_offset, max_offset))
 
-            stacked_data = stacked_data[:, z_min : z_max + 1, y_min : y_max + 1, x_min : x_max + 1]
-
+        stacked_data = stacked_data[:, z_min : z_max + 1, y_min : y_max + 1, x_min : x_max + 1]
+        
         while (stacked_data.shape[1] * stacked_data.shape[2] * stacked_data.shape[3]) > self.size_threshold:
             max_dim_index = int(torch.argmax(torch.tensor(stacked_data.shape[1:])))
             kernel_size = [1, 1, 1]
@@ -158,24 +176,85 @@ class NPZDataset(Dataset):
 
         # imgdata = imgdata.float()
 
-        rel_path = os.path.relpath(img_path, self.base_dir)
 
         def use_box():
-            if "brats" in rel_path.lower():
-                return False
-            # if "vessel" in rel_path.lower():
+            # if "brats" in rel_path.lower() or "vessel" in rel_path.lower():
             #     return False
-            else:
-                return np.random.rand() < 1.0
+            return np.random.rand() < 1.0
 
         return {
             "image": imgdata,
             "label": labeldata,
-            "boxes": self.get_bboxes_3D(labeldata) if use_box() else torch.zeros((2, 3)),
+            "boxes": self.get_diameter_points_fast(labeldata),
+            #"boxes":self.get_bboxes_3D(labeldata) if use_box() else torch.zeros((2, 3)),
             # "boxes": self.expanded_mask3D_to_bbox(labeldata[0], rel_path) if use_box() else torch.zeros((6, 3)),
             "spacing": spacing,
             "rel_path": rel_path,
         }
+
+
+    def get_diameter_points_fast(self, gt3D: torch.Tensor) -> torch.Tensor:
+        # 1) pick the slice with largest area
+        lesion = gt3D[0]                              # [D,H,W]
+        areas = lesion.sum(dim=(1,2))                 # [D]
+        k = torch.argmax(areas).item()
+        mask2d = lesion[k]                            # [H,W]
+
+        # 2) extract nonzero pixel coordinates
+        pts = torch.nonzero(mask2d, as_tuple=False)   # [N,2]
+        N = pts.shape[0]
+        if N < 2:
+            return torch.zeros((2,3), dtype=torch.int64)
+
+        # 3) convex hull on CPU numpy
+        pts_np = pts.cpu().numpy()
+        hull = ConvexHull(pts_np)
+        hull_pts = pts_np[hull.vertices]              # [h,2], h ≪ N
+
+        # 4) pairwise squared‑distance on hull points
+        diffs = hull_pts[:, None, :] - hull_pts[None, :, :]   # [h,h,2]
+        d2   = (diffs**2).sum(-1)                             # [h,h]
+        idx_flat = np.argmax(d2)
+        i, j = divmod(idx_flat, d2.shape[1])
+
+        # 5) build 3D points
+        z = torch.tensor([k], dtype=torch.int64)
+        p1 = torch.cat([z, torch.from_numpy(hull_pts[i]).to(torch.int64)])
+        p2 = torch.cat([z, torch.from_numpy(hull_pts[j]).to(torch.int64)])
+        return torch.stack([p1, p2], dim=0)                # [2,3]   
+
+    def get_diameter_points(self, gt3D: torch.Tensor) -> torch.Tensor:
+        lesion_array = gt3D[0]  # shape: [D, H, W]
+
+        # Compute area per slice
+        area_per_slice = lesion_array.sum(dim=(1, 2))  # shape: [D]
+
+        # Find the key slice
+        key_slice_id = torch.argmax(area_per_slice)
+        largest_2D_slice = lesion_array[key_slice_id]  # shape: [H, W]
+
+        # Get non-zero pixel coordinates
+        points_2d = torch.nonzero(largest_2D_slice, as_tuple=False)  # shape: [N, 2]
+
+        if points_2d.size(0) < 2:
+            print(f"WARNING: Not enough points in slice {key_slice_id}, returning dummy points.")
+            return torch.zeros((2, 3), dtype=torch.int64)  # handle edge case with dummy 3D points
+
+        # Compute pairwise distances
+        diffs = points_2d[:, None, :] - points_2d[None, :, :]  # shape: [N, N, 2]
+        dist_matrix = torch.norm(diffs.float(), dim=2)  # shape: [N, N]
+
+        # Get indices of the most distant points
+        max_diam_idx = torch.argmax(dist_matrix)
+        idx1, idx2 = divmod(max_diam_idx.item(), dist_matrix.size(1))
+
+        # Add z-dimension to each point
+        z = key_slice_id.item()
+        p1 = torch.cat([torch.tensor([z]), points_2d[idx1]])  # [z, y, x]
+        p2 = torch.cat([torch.tensor([z]), points_2d[idx2]])  # [z, y, x]
+
+        return torch.stack((p1, p2))  # shape: [2, 3]
+
 
     def get_bbox_2D(self, gt2D: np.ndarray) -> np.ndarray:
         # Compute bounding box for 2D segmentation

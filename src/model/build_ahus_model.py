@@ -8,18 +8,18 @@ from src.model.modeling.segresnet import SegResNetDS2
 
 
 def build_ahus_model(position_encoder_class: type[PositionEncoder3D], large: bool = False) -> AhusModel:
-    init_filters = 16 if not large else 32
-    blocks_down: tuple = (1, 1, 2, 4)
-    blocks_up: tuple = (1, 1, 1, 1)
-    embed_dim = 128 if not large else 256
-    num_heads = 4 if not large else 8
+    init_filters = 16 if not large else 8
+    blocks_down: tuple = (1, 1, 2, 4) if not large else (1, 1, 2, 4, 4)
+    blocks_up: tuple = (1, 1, 1, 1) if not large else (1, 1, 1, 1, 1)
+    embed_dim = 128
+    num_heads = 4
     segresnet = SegResNetDS2(init_filters=init_filters, blocks_down=blocks_down)
 
     position_encoder = position_encoder_class(embed_dim=embed_dim, num_heads=num_heads)
 
     prompt_encoder = PromptEncoder3D(
         embed_dim=embed_dim,
-        prev_mask_downscaling_factor=8,
+        prev_mask_downscaling_factor=8 if not large else 16,
         init_filters=init_filters,
         position_encoder=position_encoder,
     )

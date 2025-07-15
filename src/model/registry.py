@@ -8,4 +8,5 @@ model_registry = {
     "ahus_model_rope_mixed": partial(build_ahus_model, RoPEMixed),
     "ahus_model_rope_mixed_large": partial(build_ahus_model, RoPEMixed, large=True),
     "ahus_model_liere": partial(build_ahus_model, LieRE),
+    "ahus_model_liere_large": partial(build_ahus_model, LieRE, large=True),
 }

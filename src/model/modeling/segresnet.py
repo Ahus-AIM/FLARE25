@@ -77,7 +77,7 @@ class SegResEncoder(nn.Module):
         init_filters: int = 32,
         in_channels: int = 1,
         act: tuple | str = "relu",
-        norm: tuple | str = "batch",
+        norm: tuple | str = "instance",
         blocks_down: tuple = (1, 2, 2, 4),
         head_module: nn.Module | None = None,
         anisotropic_scales: tuple | None = None,
@@ -153,7 +153,6 @@ class SegResEncoder(nn.Module):
         outputs = []
         x = self._standardize(x)
         x = self.conv_init(x)
-
         for level in self.layers:
             x = level["blocks"](x)
             outputs.append(x)
@@ -171,8 +170,9 @@ class SegResEncoder(nn.Module):
         """
         Standardize the input tensor to have zero mean and unit variance.
         """
-        x = (x - x.mean()) / x.std().clamp(min=1e-5)
-        return x
+        # x = (x - x.mean()) / x.std().clamp(min=1e-5)
+        return x - 0.5
+        # return x
 
 
 class SegResNetDS2(nn.Module):
@@ -206,7 +206,7 @@ class SegResNetDS2(nn.Module):
         in_channels: int = 1,
         out_channels: int = 1,
         act: tuple | str = "relu",
-        norm: tuple | str = "batch",
+        norm: tuple | str = "instance",
         blocks_down: tuple = (1, 2, 2, 4),
         blocks_up: tuple | None = None,
         dsdepth: int = 1,
@@ -267,8 +267,6 @@ class SegResNetDS2(nn.Module):
         self.blocks_up = blocks_up
 
         filters = init_filters * 2**n_up
-        # self.up_layers = nn.ModuleList()
-        self.up_layers_auto = nn.ModuleList()
 
         for i in range(n_up):
             filters = filters // 2
@@ -276,17 +274,6 @@ class SegResNetDS2(nn.Module):
                 aniso_kernel(anisotropic_scales[len(blocks_up) - i - 1]) if anisotropic_scales else (3, 1, 2)
             )
 
-            level_auto = nn.ModuleDict()
-            level_auto["upsample"] = UpSample(
-                mode=upsample_mode,
-                spatial_dims=spatial_dims,
-                in_channels=2 * filters,
-                out_channels=filters,
-                kernel_size=kernel_size,
-                scale_factor=stride,
-                bias=False,
-                align_corners=False,
-            )
             blocks = [
                 SegResBlock(
                     spatial_dims=spatial_dims,
@@ -297,33 +284,6 @@ class SegResNetDS2(nn.Module):
                 )
                 for _ in range(blocks_up[i])
             ]
-            level_auto["blocks"] = nn.Sequential(*blocks)
-            if len(blocks_up) - i <= dsdepth:  # deep supervision heads
-                level_auto["head"] = Conv[Conv.CONV, spatial_dims](
-                    in_channels=filters,
-                    out_channels=out_channels,
-                    kernel_size=1,
-                    bias=True,
-                )
-            else:
-                level_auto["head"] = nn.Identity()
-
-            self.up_layers_auto.append(level_auto)
-
-        if n_up == 0:  # in a corner case of flat structure (no downsampling), attache a single head
-            level_auto = nn.ModuleDict(
-                {
-                    "upsample": nn.Identity(),
-                    "blocks": nn.Identity(),
-                    "head": Conv[Conv.CONV, spatial_dims](
-                        in_channels=filters,
-                        out_channels=out_channels,
-                        kernel_size=1,
-                        bias=True,
-                    ),
-                }
-            )
-            self.up_layers_auto.append(level_auto)
 
     def shape_factor(self):
         """
@@ -354,18 +314,7 @@ class SegResNetDS2(nn.Module):
         x_down.reverse()
         x = x_down[0].clone()
 
-        outputs_auto: list[torch.Tensor] = []
-        if with_auto:
-            i = 1
-            for level in self.up_layers_auto:
-                x = level["upsample"](x)
-                x = level["blocks"](x)
-
-                if len(self.up_layers_auto) - i <= self.dsdepth:
-                    outputs_auto.append(level["head"](x))
-                i = i + 1
-
-        return x_down, outputs_auto[-1]
+        return x_down
 
     def forward(
         self, x: torch.Tensor, with_point=False, with_auto=True, **kwargs

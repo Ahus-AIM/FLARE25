@@ -190,10 +190,8 @@ parser.add_argument(
 )
 parser.add_argument(
     "--model_checkpoint",
-    # default="/home/stenheli/SAM-MED3D/work_dir/21may_coreset_large_rope/model_latest.pth",
-    # default="/home/stenheli/SAM-MED3D/work_dir/model_25_apr.pth",
-    # default="/home/stenheli/SAM-MED3D/work_dir/4accum_coreset_nobox/model_latest.pth",
-    default="/home/stenheli/SAM-MED3D/work_dir/4accum_coreset_nobox/model_latest_epoch_10.pth",
+    # default="/home/stenheli/SAM-MED3D/work_dir/4accum_coreset_nobox/model_latest_epoch_10.pth",
+    default="/home/stenheli/SAM-MED3D/work_dir/5jun_liere_muon_biglr/model_latest.pth",
     type=str,
     required=False,
     help="Path to the model weights.",
@@ -219,7 +217,7 @@ parser.add_argument(
     default="cuda",
     help="Which device to run the segmenter on.",
 )
-parser.add_argument("--size_threshold", type=int, default=256 * 256 * 128, help="Size of the input image.")
+parser.add_argument("--size_threshold", type=int, default=256 * 128 * 128, help="Size of the input image.")
 
 
 args = parser.parse_args()
@@ -284,14 +282,7 @@ np.random.seed(0)
 np.random.shuffle(test_cases)
 
 validated_modalities = []
-# Each test case is a single 3D image, with no channels
-# The values are integers, with each integer representing a different class (background, different foreground classes)
 for case in tqdm(test_cases):
-    # try:
-    # if "brats" not in case.lower():
-    #     continue
-    # if "air" not in case.lower():
-    #     continue
     if case[:6].lower() not in validated_modalities:
         print(f"\n##### {case} #####")
         validated_modalities.append(case[:6].lower())
@@ -439,7 +430,7 @@ for case in tqdm(test_cases):
 
         # This command is expected to take (D, H, W) images from one folder and write (D, H, W) segmentations (integer valued) to a different folder
         # BBoxes either need to be present in the npz file as the "boxes" key, or be in a separate file with prefix "boxes_"
-        cmd = f"python3 -m src.submission.ahus_predict --load_path {input_temp} --save_path {output_temp} --model_type {model_type} --model_checkpoint {model_checkpoint} --model_device {model_device} --segmenter_type {segmenter_type} --segmenter_checkpoint {segmenter_checkpoint} --segmenter_device {segmenter_device} --size_threshold {size_threshold} --n_clicks {n_clicks}"
+        cmd = f"python3 -m src.submission.ahus_predict --load_path {input_temp} --save_path {output_temp} --model_type {model_type} --model_checkpoint {model_checkpoint} --model_device {model_device} --segmenter_type {segmenter_type} --segmenter_checkpoint {segmenter_checkpoint} --segmenter_device {segmenter_device} --size_threshold {size_threshold} --n_clicks {n_clicks} --debug True"
 
         start_time = time.time()
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
