@@ -30,6 +30,7 @@ from tqdm import tqdm
 
 from src.dataset.npz_dataset import NPZDataset, create_weighted_dataset_folder_sampler, create_weighted_sampler
 from src.model.registry import model_registry
+from src.optimizer.adammuon import AdamMuon
 from src.utils.decode import decoder_forward
 from src.utils.interact import interact
 
@@ -320,33 +321,33 @@ class BaseTrainer:
     def set_optimizer(self):
         model = self.model
 
-        def get_param_groups(module, lr_scale=1.0):
-            """Helper function to group parameters while excluding biases and norms from weight decay."""
-            decay, no_decay = [], []
-            for name, param in module.named_parameters():
-                if not param.requires_grad:
-                    continue
-                if "bias" in name.lower() or "norm" in name.lower():
-                    no_decay.append(param)
-                else:
-                    decay.append(param)
+        # def get_param_groups(module, lr_scale=1.0):
+        #    """Helper function to group parameters while excluding biases and norms from weight decay."""
+        #    decay, no_decay = [], []
+        #    for name, param in module.named_parameters():
+        #        if not param.requires_grad:
+        #            continue
+        #        if "bias" in name.lower() or "norm" in name.lower():
+        #            no_decay.append(param)
+        #        else:
+        #            decay.append(param)
 
-            return [
-                {
-                    "params": decay,
-                    "lr": self.args.lr * lr_scale,
-                    "weight_decay": self.args.weight_decay,
-                },
-                {"params": no_decay, "lr": self.args.lr * lr_scale, "weight_decay": 0.0},
-            ]
+        #    return [
+        #        {
+        #            "params": decay,
+        #            "lr": self.args.lr * lr_scale,
+        #            "weight_decay": self.args.weight_decay,
+        #        },
+        #        {"params": no_decay, "lr": self.args.lr * lr_scale, "weight_decay": 0.0},
+        #    ]
 
-        param_groups = []
-        param_groups.extend(get_param_groups(model.segresnet, lr_scale=1.0))
-        param_groups.extend(get_param_groups(model.prompt_encoder, lr_scale=1.0))
-        param_groups.extend(get_param_groups(model.mask_decoder, lr_scale=1.0))
+        # param_groups = []
+        # param_groups.extend(get_param_groups(model.segresnet, lr_scale=1.0))
+        # param_groups.extend(get_param_groups(model.prompt_encoder, lr_scale=1.0))
+        # param_groups.extend(get_param_groups(model.mask_decoder, lr_scale=1.0))
 
-        self.optimizer = torch.optim.AdamW(
-            param_groups, lr=self.args.lr, betas=(0.9, 0.999), weight_decay=self.args.weight_decay
+        self.optimizer = AdamMuon(
+            self.model.parameters(), lr=self.args.lr, betas=(0.9, 0.999), weight_decay=self.args.weight_decay
         )
 
         print("Registering weight normalization post hook")
@@ -508,7 +509,7 @@ class BaseTrainer:
         pos_weight_reweighing = pos_weight * reweighing
 
         rec_loss = self.rec_loss(xhat, image) * pos_weight_reweighing
-        return_loss = rec_loss.mean()
+        return_loss = torch.tensor(0.0, device=image.device)  # rec_loss.mean()
 
         losses_dict["rec"] = return_loss.item()
 
@@ -585,19 +586,20 @@ class BaseTrainer:
                 )
             except Exception as e:
                 print(f"Error processing batch at step {step}: {e}")
+                traceback.print_exc()
             try:
-                image = image.to(device)
+                image = image.to(device) * 0
                 mask_targets = (mask_targets != 0).to(device).type(torch.long)
                 boxes = boxes.to(device)
-                with torch.amp.autocast("cuda"):
-                    image_embeddings, xhat = model.segresnet(image)
+                # with torch.amp.autocast("cuda"):
+                image_embeddings, xhat = model.segresnet(image)
 
-                    self.click_points = []
-                    self.click_labels = []
+                self.click_points = []
+                self.click_labels = []
 
-                    mask_logits, loss, losses_dict, class_losses_dict, curr_nii_dict = self.interaction(
-                        model, image_embeddings, mask_targets, boxes, image, xhat, rel_file_path
-                    )
+                mask_logits, loss, losses_dict, class_losses_dict, curr_nii_dict = self.interaction(
+                    model, image_embeddings, mask_targets, boxes, image, xhat, rel_file_path
+                )
                 nii_dict = nii_dict | curr_nii_dict
 
                 epoch_loss += loss.item()
@@ -854,10 +856,10 @@ if __name__ == "__main__":
         type=str,
         default="/home/datasets/FLARE-MedFM/val",
     )
-    parser.add_argument("--log_every_n_steps", type=int, default=250)
+    parser.add_argument("--log_every_n_steps", type=int, default=50)
     parser.add_argument("--dry_run", action="store_true", default=False)
     parser.add_argument("--profile", action="store_true", default=False)
-    parser.add_argument("--size_threshold", type=int, default=256 * 128 * 128)
+    parser.add_argument("--size_threshold", type=int, default=64**3)
     parser.add_argument("--data_sampling_method", type=str, default="dataset")
 
     # train
@@ -873,8 +875,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_epochs", type=int, default=10_000)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--accumulation_steps", type=int, default=1)
-    parser.add_argument("--lr", type=float, default=8e-4)
-    parser.add_argument("--weight_decay", type=float, default=0.0)
+    parser.add_argument("--lr", type=float, default=8e-3)
+    parser.add_argument("--weight_decay", type=float, default=0.1)
     parser.add_argument("--port", type=int, default=12361)
 
     args = parser.parse_args()
