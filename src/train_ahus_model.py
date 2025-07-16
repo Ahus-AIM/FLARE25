@@ -9,10 +9,12 @@ import numpy as np
 join = os.path.join
 import argparse
 from pathlib import Path
-
+from typing import Callable, Optional, overload
 import nibabel as nib
 import torch
 import torch.multiprocessing as mp
+from torch import Optimizer
+from torch.optim import AdamW
 from monai.losses import DiceCELoss
 from monai.transforms import (
     Compose,
@@ -46,9 +48,7 @@ sampler_class = {
 
 logger = logging.getLogger(__name__)
 
-
-
-def zeropower_via_newtonschulz5(G, steps=5, eps=1e-7):
+def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5, eps: float = 1e-7) -> torch.Tensor:
     assert len(G.shape) == 2
     a, b, c = (3.4445, -4.7750, 2.0315)
     X = G.bfloat16()
@@ -63,12 +63,23 @@ def zeropower_via_newtonschulz5(G, steps=5, eps=1e-7):
         X = X.T
     return X
 
-class Muon(torch.optim.Optimizer):
-    def __init__(self, params, lr, momentum, weight_decay):
-        defaults = dict(lr=lr, momentum=momentum, weight_decay=weight_decay)
-        super().__init__(params, defaults)
 
-    def step(self):
+class Muon(Optimizer):
+    def __init__(self, params: list[torch.Tensor], lr: float, momentum: float, weight_decay: float):
+        defaults = dict(lr=lr, momentum=momentum)
+        super().__init__(params, defaults)
+        self.weight_decay = weight_decay
+
+    @overload
+    def step(self, closure: None = ...) -> None: ...  # noqa: E704
+
+    @overload
+    def step(self, closure: Callable[[], float]) -> float: ...  # noqa: E704
+
+    def step(self, closure: Optional[Callable[[], float]] = None) -> Optional[float]:
+        loss = None
+        if closure is not None:
+            loss = closure()
         for group in self.param_groups:
             lr = group["lr"]
             momentum = group["momentum"]
@@ -84,19 +95,29 @@ class Muon(torch.optim.Optimizer):
                 buf.mul_(momentum).add_(g)
                 g = g.add(buf, alpha=momentum)
 
-                # p.data.mul_(len(p.data) ** 0.5 / p.data.norm())  # normalize the weight
                 update = zeropower_via_newtonschulz5(g.reshape(len(g), -1)).view(g.shape)  # whiten the update
+
+                if self.weight_decay != 0:
+                    p.data.mul_(1 - lr * self.weight_decay)  # apply weight decay
+
                 p.data.add_(update, alpha=-lr)  # take a step
+        return loss
 
 
-
-
-class AdamMuon(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3, momentum=0.95, betas=(0.9, 0.999), eps=1e-8, weight_decay=0):
+class AdamMuon(Optimizer):
+    def __init__(
+        self,
+        params: list[torch.Tensor],
+        lr: float = 1e-3,
+        muon_momentum: float = 0.95,
+        betas: tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-8,
+        weight_decay: float = 1e-5,
+    ):
         muon_params, adam_params = [], []
         if isinstance(params, (list, tuple)) and isinstance(params[0], dict):
             for group in params:
-                for p in group['params']:
+                for p in group["params"]:
                     if p.ndim > 1:
                         muon_params.append(p)
                     else:
@@ -108,8 +129,8 @@ class AdamMuon(torch.optim.Optimizer):
                 else:
                     adam_params.append(p)
 
-        self.muon = Muon(muon_params, lr=lr, momentum=momentum, weight_decay=weight_decay) if muon_params else None
-        self.adam = torch.optim.AdamW(adam_params, lr=lr, betas=betas, eps=eps, weight_decay=weight_decay) if adam_params else None
+        self.muon = Muon(muon_params, lr=lr, momentum=muon_momentum, weight_decay=weight_decay) if muon_params else None
+        self.adam = AdamW(adam_params, lr=lr, betas=betas, eps=eps, weight_decay=weight_decay) if adam_params else None
 
         # Combine param groups for compatibility with PyTorch schedulers
         param_groups = []
@@ -122,12 +143,16 @@ class AdamMuon(torch.optim.Optimizer):
                 g["optimizer"] = "adam"
                 param_groups.append(g)
 
-        print(f"Num muon param groups: {len(muon_params)}, Num adam param groups: {len(adam_params)}")
-
-        defaults = dict(lr=lr, momentum=momentum, betas=betas, eps=eps, weight_decay=weight_decay)
+        defaults = dict(lr=lr, momentum=muon_momentum, betas=betas, eps=eps, weight_decay=weight_decay)
         super().__init__(param_groups, defaults)
 
-    def step(self, closure=None):
+    @overload
+    def step(self, closure: None = ...) -> None: ...  # noqa: E704
+
+    @overload
+    def step(self, closure: Callable[[], float]) -> float: ...  # noqa: E704
+
+    def step(self, closure: Optional[Callable[[], float]] = None) -> Optional[float]:
         loss = None
         if closure is not None:
             loss = closure()
@@ -139,20 +164,11 @@ class AdamMuon(torch.optim.Optimizer):
 
         return loss
 
-    def zero_grad(self, set_to_none=False):
+    def zero_grad(self, set_to_none: bool = False) -> None:
         if self.muon:
             self.muon.zero_grad(set_to_none=set_to_none)
         if self.adam:
             self.adam.zero_grad(set_to_none=set_to_none)
-
-
-
-
-
-
-
-
-
 
 
 def save_batch_stats(losses_dict):
@@ -933,13 +949,13 @@ if __name__ == "__main__":
 
     # lr_scheduler
     parser.add_argument("--lr_scheduler", type=str, default="multisteplr")
-    parser.add_argument("--step_size", type=list, default=[1,2,3,4])# 20, 40, 80])
+    parser.add_argument("--step_size", type=list, default=[5,10,15,20,])# 20, 40, 80])
     parser.add_argument("--gamma", type=float, default=0.5)
-    parser.add_argument("--num_epochs", type=int, default=15)
+    parser.add_argument("--num_epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--accumulation_steps", type=int, default=1)
-    parser.add_argument("--lr", type=float, default=8e-4)
-    parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--lr", type=float, default=2e-3)
+    parser.add_argument("--weight_decay", type=float, default=0.001)
     parser.add_argument("--port", type=int, default=12361)
     args = parser.parse_args()
 

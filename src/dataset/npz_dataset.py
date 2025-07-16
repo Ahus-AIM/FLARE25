@@ -208,7 +208,11 @@ class NPZDataset(Dataset):
 
         # 3) convex hull on CPU numpy
         pts_np = pts.cpu().numpy()
-        hull = ConvexHull(pts_np)
+        try:
+            hull = ConvexHull(pts_np)
+        except Exception as e:
+            print(f"WARNING: ConvexHull computation failed for slice {k} with error {e}, returning dummy points.")
+            return torch.zeros((2, 3), dtype=torch.int64)
         hull_pts = pts_np[hull.vertices]              # [h,2], h ≪ N
 
         # 4) pairwise squared‑distance on hull points
