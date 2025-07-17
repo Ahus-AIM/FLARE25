@@ -282,6 +282,7 @@ class InferencePipeline:
             save_dir="work_dir/inference_cropped",
         )
 
+    @torch.no_grad()
     def predict(self, data: dict[str, Any]) -> np.ndarray:
         """Return a multiclass segmentation."""
 
@@ -481,7 +482,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--size_threshold",
         type=int,
-        default=256 * 256 * 128,
+        default=128 * 128 * 128,
         help="Size of the input image.",
     )
     parser.add_argument(

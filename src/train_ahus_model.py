@@ -932,7 +932,7 @@ if __name__ == "__main__":
     parser.add_argument("--log_every_n_steps", type=int, default=200)
     parser.add_argument("--dry_run", action="store_true", default=False)
     parser.add_argument("--profile", action="store_true", default=False)
-    parser.add_argument("--size_threshold", type=int, default=256 * 256 * 256)
+    parser.add_argument("--size_threshold", type=int, default=128**3)
     parser.add_argument("--data_sampling_method", type=str, default="dataset")
 
     # train
@@ -954,7 +954,7 @@ if __name__ == "__main__":
         ],
     )  # 20, 40, 80])
     parser.add_argument("--gamma", type=float, default=0.5)
-    parser.add_argument("--num_epochs", type=int, default=100)
+    parser.add_argument("--num_epochs", type=int, default=10000)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--accumulation_steps", type=int, default=1)
     parser.add_argument("--lr", type=float, default=2e-3)

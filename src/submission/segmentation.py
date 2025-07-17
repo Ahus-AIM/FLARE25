@@ -218,7 +218,6 @@ class OriginalSegmenter(Segmenter):
         counter = 0
         while not_all_instances_present and counter < max_iter:
             pred_concat = torch.cat((threshold_tensor, image_logits), dim=0)
-            pred_prob = torch.softmax(pred_concat, dim=0)
             pred_long = pred_concat.argmax(dim=0)
 
             if not ensure_all_present:
