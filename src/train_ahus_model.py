@@ -10,11 +10,10 @@ join = os.path.join
 import argparse
 from pathlib import Path
 from typing import Callable, Optional, overload
+
 import nibabel as nib
 import torch
 import torch.multiprocessing as mp
-from torch import Optimizer
-from torch.optim import AdamW
 from monai.losses import DiceCELoss
 from monai.transforms import (
     Compose,
@@ -27,6 +26,7 @@ from monai.transforms import (
     Transform,
 )
 from torch.backends import cudnn
+from torch.optim import AdamW, Optimizer
 from tqdm import tqdm
 
 from src.dataset.npz_dataset import NPZDataset, create_weighted_dataset_folder_sampler, create_weighted_sampler
@@ -47,6 +47,7 @@ sampler_class = {
 }
 
 logger = logging.getLogger(__name__)
+
 
 def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5, eps: float = 1e-7) -> torch.Tensor:
     assert len(G.shape) == 2
@@ -228,7 +229,7 @@ def plot_batch_stats():
 
 
 def _plot_class_stats(group, prefix):
-    linestyles = ["-", "--", "-.", ":"]*1000
+    linestyles = ["-", "--", "-.", ":"] * 1000
     num_colors = 10
     for loss_type, class_type in group.items():
         for i, (key, (value, value_idx)) in enumerate(sorted(class_type.items())):
@@ -366,9 +367,7 @@ def get_dataloaders_npz(args):
             # RandPermuteAxes(prob=1.0),
         ]
     )
-    val_transform = CropForeground(
-        select_fn=lambda x: x > 0, k_divisible=16, allow_smaller=True
-    )
+    val_transform = CropForeground(select_fn=lambda x: x > 0, k_divisible=16, allow_smaller=True)
 
     print(args.train_dir)
     train_dataset = NPZDataset(
@@ -523,9 +522,7 @@ class BaseTrainer:
 
         return torch.cat(self.click_points, dim=1).to(device), torch.cat(self.click_labels, dim=1).to(device)
 
-    def store_class_losses_and_nii(
-        self, image, mask_logits, mask_targets, rel_file_path, split_filename_to_dirs
-    ):
+    def store_class_losses_and_nii(self, image, mask_logits, mask_targets, rel_file_path, split_filename_to_dirs):
         if split_filename_to_dirs:
             root_paths = []
             sub_paths = []
@@ -554,7 +551,6 @@ class BaseTrainer:
                     continue
                 idxs = [i for i, p in enumerate(sub_paths) if p == sub_path]
                 num_samples += len(idxs)
-
 
                 curr_seg_loss = self.seg_loss(mask_logits[idxs], mask_targets[idxs])
                 curr_root_seg_loss += curr_seg_loss * len(idxs)
@@ -613,9 +609,7 @@ class BaseTrainer:
             if points_input is None:
                 return_loss += self.seg_loss(mask_logits, mask_targets)
                 return mask_logits, loss, {}, class_losses_dict, nii_dict
-            mask_logits, _ = decoder_forward(
-                model, image_embeddings, mask_logits, (points_input, labels_input), boxes
-            )
+            mask_logits, _ = decoder_forward(model, image_embeddings, mask_logits, (points_input, labels_input), boxes)
             loss = self.seg_loss(mask_logits, mask_targets)
 
             return_loss += loss
@@ -932,9 +926,9 @@ if __name__ == "__main__":
     parser.add_argument("--last_click_loss_weight", type=int, default=1)
     parser.add_argument("--train_dir", type=str, default="/dataset/FLARE-MedFM/train/")
     parser.add_argument("--val_img_dir", type=str, default="/dataset/FLARE-MedFM/val/")
-    #parser.add_argument(
+    # parser.add_argument(
     #    "--val_gt_dir", type=str, default="../datasets/CVPR-BiomedSegFM/3D_val_gt/3D_val_gt_interactive"
-    #)
+    # )
     parser.add_argument("--log_every_n_steps", type=int, default=200)
     parser.add_argument("--dry_run", action="store_true", default=False)
     parser.add_argument("--profile", action="store_true", default=False)
@@ -949,7 +943,16 @@ if __name__ == "__main__":
 
     # lr_scheduler
     parser.add_argument("--lr_scheduler", type=str, default="multisteplr")
-    parser.add_argument("--step_size", type=list, default=[5,10,15,20,])# 20, 40, 80])
+    parser.add_argument(
+        "--step_size",
+        type=list,
+        default=[
+            5,
+            10,
+            15,
+            20,
+        ],
+    )  # 20, 40, 80])
     parser.add_argument("--gamma", type=float, default=0.5)
     parser.add_argument("--num_epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=1)

@@ -113,7 +113,7 @@ class NPZDataset(Dataset):
             return self.__getitem__(np.random.randint(len(self)))
         try:
             if self.validation:
-                selected_label = unique_labels[idx%len(unique_labels)]
+                selected_label = unique_labels[idx % len(unique_labels)]
             else:
                 selected_label = np.random.choice(unique_labels)
             labeldata = gts == selected_label
@@ -150,7 +150,7 @@ class NPZDataset(Dataset):
         x_max = min(gts.shape[2] - 1, x_max + np.random.randint(min_offset, max_offset))
 
         stacked_data = stacked_data[:, z_min : z_max + 1, y_min : y_max + 1, x_min : x_max + 1]
-        
+
         while (stacked_data.shape[1] * stacked_data.shape[2] * stacked_data.shape[3]) > self.size_threshold:
             max_dim_index = int(torch.argmax(torch.tensor(stacked_data.shape[1:])))
             kernel_size = [1, 1, 1]
@@ -176,7 +176,6 @@ class NPZDataset(Dataset):
 
         # imgdata = imgdata.float()
 
-
         def use_box():
             # if "brats" in rel_path.lower() or "vessel" in rel_path.lower():
             #     return False
@@ -186,25 +185,24 @@ class NPZDataset(Dataset):
             "image": imgdata,
             "label": labeldata,
             "boxes": self.get_diameter_points_fast(labeldata),
-            #"boxes":self.get_bboxes_3D(labeldata) if use_box() else torch.zeros((2, 3)),
+            # "boxes":self.get_bboxes_3D(labeldata) if use_box() else torch.zeros((2, 3)),
             # "boxes": self.expanded_mask3D_to_bbox(labeldata[0], rel_path) if use_box() else torch.zeros((6, 3)),
             "spacing": spacing,
             "rel_path": rel_path,
         }
 
-
     def get_diameter_points_fast(self, gt3D: torch.Tensor) -> torch.Tensor:
         # 1) pick the slice with largest area
-        lesion = gt3D[0]                              # [D,H,W]
-        areas = lesion.sum(dim=(1,2))                 # [D]
+        lesion = gt3D[0]  # [D,H,W]
+        areas = lesion.sum(dim=(1, 2))  # [D]
         k = torch.argmax(areas).item()
-        mask2d = lesion[k]                            # [H,W]
+        mask2d = lesion[k]  # [H,W]
 
         # 2) extract nonzero pixel coordinates
-        pts = torch.nonzero(mask2d, as_tuple=False)   # [N,2]
+        pts = torch.nonzero(mask2d, as_tuple=False)  # [N,2]
         N = pts.shape[0]
         if N < 2:
-            return torch.zeros((2,3), dtype=torch.int64)
+            return torch.zeros((2, 3), dtype=torch.int64)
 
         # 3) convex hull on CPU numpy
         pts_np = pts.cpu().numpy()
@@ -213,11 +211,11 @@ class NPZDataset(Dataset):
         except Exception as e:
             print(f"WARNING: ConvexHull computation failed for slice {k} with error {e}, returning dummy points.")
             return torch.zeros((2, 3), dtype=torch.int64)
-        hull_pts = pts_np[hull.vertices]              # [h,2], h ≪ N
+        hull_pts = pts_np[hull.vertices]  # [h,2], h ≪ N
 
         # 4) pairwise squared‑distance on hull points
-        diffs = hull_pts[:, None, :] - hull_pts[None, :, :]   # [h,h,2]
-        d2   = (diffs**2).sum(-1)                             # [h,h]
+        diffs = hull_pts[:, None, :] - hull_pts[None, :, :]  # [h,h,2]
+        d2 = (diffs**2).sum(-1)  # [h,h]
         idx_flat = np.argmax(d2)
         i, j = divmod(idx_flat, d2.shape[1])
 
@@ -225,7 +223,7 @@ class NPZDataset(Dataset):
         z = torch.tensor([k], dtype=torch.int64)
         p1 = torch.cat([z, torch.from_numpy(hull_pts[i]).to(torch.int64)])
         p2 = torch.cat([z, torch.from_numpy(hull_pts[j]).to(torch.int64)])
-        return torch.stack([p1, p2], dim=0)                # [2,3]   
+        return torch.stack([p1, p2], dim=0)  # [2,3]
 
     def get_diameter_points(self, gt3D: torch.Tensor) -> torch.Tensor:
         lesion_array = gt3D[0]  # shape: [D, H, W]
@@ -258,7 +256,6 @@ class NPZDataset(Dataset):
         p2 = torch.cat([torch.tensor([z]), points_2d[idx2]])  # [z, y, x]
 
         return torch.stack((p1, p2))  # shape: [2, 3]
-
 
     def get_bbox_2D(self, gt2D: np.ndarray) -> np.ndarray:
         # Compute bounding box for 2D segmentation

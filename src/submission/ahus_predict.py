@@ -13,13 +13,7 @@ import numpy as np
 import torch
 from jaxtyping import Float, Integer
 
-from src.custom_types import (
-    BatchedImageLogits,
-    BatchedPointCoords,
-    BatchedPointLabels,
-    Boxes,
-    Image,
-)
+from src.custom_types import BatchedImageLogits, BatchedPointCoords, BatchedPointLabels, Boxes, Image
 from src.model.registry import model_registry
 
 # This import is needed for Agent.load to recognize subclasses
@@ -107,8 +101,8 @@ class InferencePipeline:
         Load the main data file and ensure that boxes and mask logits are available.
         """
         data: Dict[str, Any] = self._load_npz(self.full_file)
-        data = self._handle_mask_logits(data)
-        data = self._handle_boxes(data)
+        # data = self._handle_mask_logits(data)
+        # data = self._handle_boxes(data)
         return data
 
     # -------------------- Inference Helpers -------------------- #
@@ -300,7 +294,7 @@ class InferencePipeline:
         # `model` assumes batch dimension
         with safe_autocast(device_type=self.model_device.split(":")[0]):
             # Batched image embeddings (1, C, D, H, W)
-            image_embeddings, _ = self.model.segresnet(downsampled_volume.unsqueeze(0).unsqueeze(0))
+            image_embeddings = self.model.segresnet(downsampled_volume.unsqueeze(0).unsqueeze(0))
             # Multiclass mask_logits: (I, 1, D, H, W)
             downsampled_image_logits, prompt_embeddings = self._batched_decoder_inference(
                 image_embeddings,
@@ -313,7 +307,7 @@ class InferencePipeline:
 
         if self.debug:
             self._log_model_view(downsampled_image_logits, downsampled_volume, downsampled_boxes)
-        self._save_image_logits(downsampled_image_logits)
+        # self._save_image_logits(downsampled_image_logits)
 
         # (n_instances, D, H, W) and now in original image space
         image_logits: BatchedImageLogits = self.coord_handler.backward(downsampled_image_logits)
@@ -403,6 +397,12 @@ class InferencePipeline:
 
         save_file_path: str = os.path.join(self.args.save_path, file_name)
         np.savez(save_file_path, segs=binary_segmentation)
+
+        import nibabel as nib
+
+        affine = np.eye(4)
+        nii_img = nib.Nifti1Image(binary_segmentation.astype(np.float32), affine)
+        nib.save(nii_img, f"{self.args.save_path}/{file_name}.nii.gz")
 
 
 if __name__ == "__main__":
