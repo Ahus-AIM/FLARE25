@@ -261,30 +261,6 @@ class SegResNetDS2(nn.Module):
             anisotropic_scales=anisotropic_scales,
         )
 
-        n_up = len(blocks_down) - 1
-        if blocks_up is None:
-            blocks_up = (1,) * n_up  # assume 1 upsample block per level
-        self.blocks_up = blocks_up
-
-        filters = init_filters * 2**n_up
-
-        for i in range(n_up):
-            filters = filters // 2
-            kernel_size, _, stride = (
-                aniso_kernel(anisotropic_scales[len(blocks_up) - i - 1]) if anisotropic_scales else (3, 1, 2)
-            )
-
-            blocks = [
-                SegResBlock(
-                    spatial_dims=spatial_dims,
-                    in_channels=filters,
-                    kernel_size=kernel_size,
-                    norm=norm,
-                    act=act,
-                )
-                for _ in range(blocks_up[i])
-            ]
-
     def shape_factor(self):
         """
         Calculate the factors (divisors) that the input image shape must be divisible by
