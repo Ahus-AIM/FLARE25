@@ -147,6 +147,27 @@ class InferencePipeline:
         print(boxes)
         return boxes_tensor
 
+    @staticmethod
+    def _get_diameter_points(data: Dict[str, Any]) -> Boxes:
+        diameter_points = []
+        lines = data["recist"]
+        for i in np.unique(lines):
+            if i == 0:
+                continue
+            line = np.argwhere(lines == i)
+            p1 = line[0]
+            p2 = line[-1]
+            diameter_points.append((p1, p2))
+
+        diameter_points = torch.tensor(diameter_points, dtype=torch.float32)
+        boxes_tensor: torch.Tensor = torch.zeros((len(diameter_points), 2, 3), dtype=torch.float32)
+
+        for i, (p1, p2) in enumerate(diameter_points):
+            boxes_tensor[i, 0, :] = torch.tensor(p1)
+            boxes_tensor[i, 1, :] = torch.tensor(p2)
+
+        return diameter_points
+
     def _get_points(self, data: Dict[str, Any]) -> tuple[BatchedPointCoords, BatchedPointLabels] | None:
         """
         Converts the points from the data dictionary into a tensor format.
@@ -265,7 +286,8 @@ class InferencePipeline:
         """Return a multiclass segmentation."""
 
         # Most of the data is not in tensor format, so it needs to be converted
-        boxes: Boxes = self._get_initial_boxes(data)
+        # boxes: Boxes = self._get_initial_boxes(data)
+        boxes: Boxes = self._get_diameter_points(data)
         if boxes is not None:
             boxes = boxes.to(self.model_device)
         points = self._get_points(data)
