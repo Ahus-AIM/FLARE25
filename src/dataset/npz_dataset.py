@@ -4,8 +4,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import Dataset, WeightedRandomSampler
 from scipy.spatial import ConvexHull
+from torch.utils.data import Dataset, WeightedRandomSampler
+
 
 class NPZDataset(Dataset):
     def __init__(
@@ -88,22 +89,21 @@ class NPZDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         img_path, gt_path = self.file_paths[idx]
-            
+
         try:
             img_npz = np.load(img_path, mmap_mode="r")
+            if gt_path:
+                gt_npz = np.load(gt_path, mmap_mode="r")
+                imgs = torch.tensor(img_npz["imgs"])
+                gts = torch.tensor(gt_npz["gts"])
+                spacing = torch.tensor(gt_npz["spacing"])
+            else:
+                imgs = torch.tensor(img_npz["imgs"])
+                gts = torch.tensor(img_npz["gts"])
+                spacing = torch.tensor(img_npz["spacing"])
         except Exception as e:
             print(f"WARNING: Exception while loading {img_path}, skipping this file. Error {e}")
             return self.__getitem__(np.random.randint(len(self)))
-
-        if gt_path:
-            gt_npz = np.load(gt_path, mmap_mode="r")
-            imgs = torch.tensor(img_npz["imgs"])
-            gts = torch.tensor(gt_npz["gts"])
-            spacing = torch.tensor(gt_npz["spacing"])
-        else:
-            imgs = torch.tensor(img_npz["imgs"])
-            gts = torch.tensor(img_npz["gts"])
-            spacing = torch.tensor(img_npz["spacing"])
 
         unique_labels = np.unique(gts.numpy().astype(np.uint16))
         unique_labels = np.sort(unique_labels)[1:]  # skip background
