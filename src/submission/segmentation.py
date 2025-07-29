@@ -86,7 +86,6 @@ def add_to_logits_diameter(logits: ImageLogits, box: Box, box_margin: int = 1, i
     # 4. Compute distances within the sub-box
     dist_sq = (xs - center[0])**2 + (ys - center[1])**2 + (zs - center[2])**2
     mask = dist_sq < r**2
-    print('mask sum', mask.sum(), increment)
 
     # 5. Add to subregion
     logits[x0:x1+1, y0:y1+1, z0:z1+1][mask] += increment
