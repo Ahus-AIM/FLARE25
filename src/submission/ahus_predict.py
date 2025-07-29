@@ -137,14 +137,12 @@ class InferencePipeline:
                                 "z_mid_x_max": first_foreground_point[2] + 16,
                             }
                         )
-                print(points)
             else:
                 return None
         boxes_tensor: torch.Tensor = torch.zeros((len(boxes), 2, 3), dtype=torch.float32)
         for i, box in enumerate(boxes):
             boxes_tensor[i, 0, :] = torch.tensor([box["z_min"], box["z_mid_y_min"], box["z_mid_x_min"]])
             boxes_tensor[i, 1, :] = torch.tensor([box["z_max"], box["z_mid_y_max"], box["z_mid_x_max"]])
-        print(boxes)
         return boxes_tensor
 
     @staticmethod
@@ -204,9 +202,9 @@ class InferencePipeline:
     def _load_model(self) -> torch.nn.Module:
         model: torch.nn.Module = model_registry[self.args.model_type]().to(self.model_device)
         ckpt: Dict[str, Any] = torch.load(
-            self.args.model_checkpoint,
-            map_location=self.model_device,
-            weights_only=False,
+           self.args.model_checkpoint,
+           map_location=self.model_device,
+           weights_only=False,
         )
         model.load_state_dict(ckpt["model_state_dict"], strict=True)
         model.eval()
@@ -412,20 +410,19 @@ class InferencePipeline:
         ]
         if not files:
             raise ValueError("No input file found in load_path")
-        file_name: str = files[0]
-        self.full_file: str = os.path.join(self.args.load_path, file_name)
 
-        data: Dict[str, Any] = self.load_data()
-        binary_segmentation: Integer[np.ndarray, "image_depth image_height image_width"] = self.predict(data)
+        for file_name in files:
+            self.full_file: str = os.path.join(self.args.load_path, file_name)
 
-        save_file_path: str = os.path.join(self.args.save_path, file_name)
-        np.savez(save_file_path, segs=binary_segmentation)
+            data: Dict[str, Any] = self.load_data()
+            binary_segmentation: Integer[np.ndarray, "image_depth image_height image_width"] = self.predict(data)
 
-        import nibabel as nib
+            # save_file_path: str = os.path.join(self.args.save_path, file_name)
+            # np.savez(save_file_path, segs=binary_segmentation)
 
-        affine = np.eye(4)
-        nii_img = nib.Nifti1Image(binary_segmentation.astype(np.float32), affine)
-        nib.save(nii_img, f"{self.args.save_path}/{file_name}.nii.gz")
+            affine = np.eye(4)
+            nii_img = nib.Nifti1Image(binary_segmentation.astype(np.float32), affine)
+            nib.save(nii_img, f"{self.args.save_path}/{file_name.removesuffix('.npz')}.nii.gz")
 
 
 if __name__ == "__main__":
