@@ -412,17 +412,20 @@ class InferencePipeline:
             raise ValueError("No input file found in load_path")
 
         for file_name in files:
-            self.full_file: str = os.path.join(self.args.load_path, file_name)
+            try:
+                self.full_file: str = os.path.join(self.args.load_path, file_name)
 
-            data: Dict[str, Any] = self.load_data()
-            binary_segmentation: Integer[np.ndarray, "image_depth image_height image_width"] = self.predict(data)
+                data: Dict[str, Any] = self.load_data()
+                binary_segmentation: Integer[np.ndarray, "image_depth image_height image_width"] = self.predict(data)
 
-            # save_file_path: str = os.path.join(self.args.save_path, file_name)
-            # np.savez(save_file_path, segs=binary_segmentation)
+                # save_file_path: str = os.path.join(self.args.save_path, file_name)
+                # np.savez(save_file_path, segs=binary_segmentation)
 
-            affine = np.eye(4)
-            nii_img = nib.Nifti1Image(binary_segmentation.astype(np.float32), affine)
-            nib.save(nii_img, f"{self.args.save_path}/{file_name.removesuffix('.npz')}.nii.gz")
+                affine = np.eye(4)
+                nii_img = nib.Nifti1Image(binary_segmentation.astype(np.float32), affine)
+                nib.save(nii_img, f"{self.args.save_path}/{file_name.removesuffix('.npz')}.nii.gz")
+            except Exception as e:
+                print(e)
 
 
 if __name__ == "__main__":
