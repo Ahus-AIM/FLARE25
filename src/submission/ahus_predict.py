@@ -403,11 +403,7 @@ class InferencePipeline:
 
     def run(self) -> None:
         torch.set_grad_enabled(False)
-        files: List[str] = [
-            f
-            for f in os.listdir(self.args.load_path)
-            if f.endswith(".npz") and "boxes_" not in f and "mask_logits_" not in f
-        ]
+        files: List[str] = [f for f in os.listdir(self.args.load_path) if f.endswith(".npz")]
         if not files:
             raise ValueError("No input file found in load_path")
 
