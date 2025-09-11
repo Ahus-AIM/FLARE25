@@ -17,7 +17,6 @@ from typing import Union
 import numpy as np
 import torch
 import torch.nn as nn
-from monai.networks.blocks.upsample import UpSample
 from monai.networks.layers.factories import Act, Conv, Norm, split_args
 from monai.utils import UpsampleMode, has_option
 

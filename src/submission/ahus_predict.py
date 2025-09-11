@@ -202,9 +202,9 @@ class InferencePipeline:
     def _load_model(self) -> torch.nn.Module:
         model: torch.nn.Module = model_registry[self.args.model_type]().to(self.model_device)
         ckpt: Dict[str, Any] = torch.load(
-           self.args.model_checkpoint,
-           map_location=self.model_device,
-           weights_only=False,
+            self.args.model_checkpoint,
+            map_location=self.model_device,
+            weights_only=False,
         )
         model.load_state_dict(ckpt["model_state_dict"], strict=True)
         model.eval()

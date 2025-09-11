@@ -18,11 +18,7 @@ from monai.losses import DiceCELoss
 from monai.transforms import (
     Compose,
     CropForeground,
-    OneOf,
-    RandBiasField,
     RandFlip,
-    RandGaussianSmooth,
-    RandHistogramShift,
     Transform,
 )
 from torch.backends import cudnn
@@ -338,25 +334,6 @@ def build_model(args):
 
 
 def get_dataloaders_npz(args):
-    transform_prob = 0.5
-    rand_transforms = Compose(
-        [
-            OneOf(
-                [
-                    OneOf(
-                        [
-                            RandBiasField(prob=transform_prob),
-                            RandGaussianSmooth(prob=transform_prob),
-                            RandHistogramShift(prob=transform_prob),
-                        ]
-                    ),
-                    RandInvertColors(prob=0.0),
-                ]
-            ),
-            ClampTransform(min_val=0.0, max_val=1.0),
-        ]
-    )
-
     threshold_value = 0
     transform = Compose(
         [
@@ -579,16 +556,8 @@ class BaseTrainer:
         image,
         rel_file_path=None,
         split_filename_to_dirs=False,
-        zero_pos_weight=1e-1,
     ):
         losses_dict = {}
-
-        pos_weight = torch.where(
-            torch.isclose(image, torch.zeros(image.shape, device=image.device)), zero_pos_weight, 1
-        )
-        reweighing = pos_weight.numel() / pos_weight.sum()
-        pos_weight_reweighing = pos_weight * reweighing
-
         mask_logits, _ = decoder_forward(model, image_embeddings, mask_logits=None, points=None, boxes=boxes)
 
         if boxes is None:

@@ -79,16 +79,16 @@ def add_to_logits_diameter(logits: ImageLogits, box: Box, box_margin: int = 1, i
     z1 = torch.clamp((center[2] + r).ceil().long(), 0, Z - 1)
 
     # 3. Generate coordinates only for the sub-box
-    xs = torch.arange(x0, x1 + 1).view(-1,1,1)
-    ys = torch.arange(y0, y1 + 1).view(1,-1,1)
-    zs = torch.arange(z0, z1 + 1).view(1,1,-1)
+    xs = torch.arange(x0, x1 + 1).view(-1, 1, 1)
+    ys = torch.arange(y0, y1 + 1).view(1, -1, 1)
+    zs = torch.arange(z0, z1 + 1).view(1, 1, -1)
 
     # 4. Compute distances within the sub-box
-    dist_sq = (xs - center[0])**2 + (ys - center[1])**2 + (zs - center[2])**2
+    dist_sq = (xs - center[0]) ** 2 + (ys - center[1]) ** 2 + (zs - center[2]) ** 2
     mask = dist_sq < r**2
 
     # 5. Add to subregion
-    logits[x0:x1+1, y0:y1+1, z0:z1+1][mask] += increment
+    logits[x0 : x1 + 1, y0 : y1 + 1, z0 : z1 + 1][mask] += increment
     return logits
 
 
@@ -247,8 +247,8 @@ class OriginalSegmenter(Segmenter):
         while not_all_instances_present and counter < max_iter:
             # Fast argmax: compute class + max value in one pass
             pred_values, pred_idx = torch.max(image_logits, dim=0, out=None)
-            pred_long.copy_(pred_idx.add(1))           # +1 to shift for background
-            pred_long[pred_values <= 0] = 0            # zero out below threshold
+            pred_long.copy_(pred_idx.add(1))  # +1 to shift for background
+            pred_long[pred_values <= 0] = 0  # zero out below threshold
 
             if not ensure_all_present:
                 return pred_long
@@ -261,7 +261,7 @@ class OriginalSegmenter(Segmenter):
             for idx in range(1, n_instances + 1):
                 if not present_mask[idx]:
                     i = idx - 1
-                    add_to_logits_diameter(image_logits[i], boxes[i], increment=2 ** counter)
+                    add_to_logits_diameter(image_logits[i], boxes[i], increment=2**counter)
 
             counter += 1
             not_all_instances_present = present_mask[1:].sum() != n_instances
