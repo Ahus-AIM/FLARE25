@@ -69,9 +69,6 @@ class NPZDataset(Dataset):
                         continue
                     file_paths.append((img_path, gt_path))
                 else:
-                    if "no_name" in img_path:
-                        print(f"WARNING: Probably No GT file for {img_path}, skipping this file.")
-                        continue
                     file_paths.append((img_path, None))
 
                 parts = os.path.normpath(img_path).split(os.sep)
