@@ -20,7 +20,7 @@ def test_train_ahus_model():
         "cpu",
         "--train_dir",
         "tests/test_data",
-        "--val_gt_dir",
+        "--val_img_dir",
         "tests/test_data",
         "--size_threshold",
         "32768",  # 16^3
@@ -28,6 +28,7 @@ def test_train_ahus_model():
         "0",
         "--num_epochs",
         "1",
+        "--dry_run",
     ]
 
     result = subprocess.run(command, cwd=base_dir, capture_output=True, text=True)

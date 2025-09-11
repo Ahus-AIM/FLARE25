@@ -926,9 +926,6 @@ if __name__ == "__main__":
     parser.add_argument("--last_click_loss_weight", type=int, default=1)
     parser.add_argument("--train_dir", type=str, default="/dataset/FLARE-MedFM/train/")
     parser.add_argument("--val_img_dir", type=str, default="/dataset/FLARE-MedFM/val/")
-    # parser.add_argument(
-    #    "--val_gt_dir", type=str, default="../datasets/CVPR-BiomedSegFM/3D_val_gt/3D_val_gt_interactive"
-    # )
     parser.add_argument("--log_every_n_steps", type=int, default=200)
     parser.add_argument("--dry_run", action="store_true", default=False)
     parser.add_argument("--profile", action="store_true", default=False)
