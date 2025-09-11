@@ -124,6 +124,8 @@ class VolumeTransforms:
         """
         Pool the boxes by dividing their coordinates by the pooling factors.
         """
+        if boxes is None:
+            return boxes
         return boxes / torch.tensor(self.pooling_factors, device=boxes.device).view(1, 3)
 
     def pool_coords(self, point_coords: BatchedPointCoords) -> BatchedPointCoords:
@@ -147,8 +149,13 @@ class VolumeTransforms:
     def _crop(
         self, volume: Image, boxes: Boxes, point_coords: BatchedPointCoords | None
     ) -> tuple[Image, Boxes, BatchedPointCoords | None]:
-        """Return cropped versions with coordinates restricted to the bounding boxes, with a margin of 16 pixels."""
-        crop_margin = 16
+        """Return cropped versions with coordinates restricted to the bounding boxes, with a margin of 32 pixels."""
+        if boxes is None:
+            self.cropped_shape = volume.shape
+            self.crop_slices = tuple(slice(0, s) for s in volume.shape)
+            return volume, boxes, point_coords
+
+        crop_margin = 32
 
         xmin = int(boxes[:, :, 0].min().item())
         ymin = int(boxes[:, :, 1].min().item())
@@ -166,6 +173,7 @@ class VolumeTransforms:
         zmax = min(volume.shape[2], zmax + crop_margin)
 
         cropped_volume = volume[xmin:xmax, ymin:ymax, zmin:zmax].clone()
+        print("VOLUME SHAPE VS CROP", volume.shape, cropped_volume.shape)
         self.cropped_shape = cropped_volume.shape
         self.crop_slices = tuple([slice(xmin, xmax), slice(ymin, ymax), slice(zmin, zmax)])
 
@@ -205,6 +213,7 @@ class VolumeTransforms:
         volume = self._normalize_volume(volume)
 
         # Crop
+        print("VOLUME SHAPE BEFORE CROP", volume.shape)
         volume, boxes, point_coords = self._crop(volume, boxes, point_coords)
 
         # Downsample

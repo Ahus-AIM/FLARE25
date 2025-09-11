@@ -5,7 +5,7 @@ import nibabel as nib
 import numpy as np
 
 # Define source and destination paths
-SOURCE_DIR = "/data/drive_data/3D_train_npz_random_10percent_16G_original"
+SOURCE_DIR = "../datasets/CVPR_coreset/"
 DEST_DIR = "./tmp_folders/"
 
 os.makedirs(DEST_DIR, exist_ok=True)
@@ -56,6 +56,19 @@ def save_random_nii(src_folder, dest_folder):
     nii_img = nib.Nifti1Image(label_array, affine=np.eye(4))
     nib.save(nii_img, nii_filename)
 
+
+# Print the total number of npz files in the root directory
+def count_npz_files(directory):
+    count = 0
+    for root, _, files in os.walk(directory):
+        for file in files:
+            if file.endswith(".npz"):
+                count += 1
+    return count
+
+
+total_npz_files = count_npz_files(SOURCE_DIR)
+print(f"Total number of npz files: {total_npz_files}")
 
 # Copy the folder structure
 copy_structure(SOURCE_DIR, DEST_DIR)

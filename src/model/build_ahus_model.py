@@ -7,11 +7,13 @@ from src.model.modeling.prompt_encoder3D import PromptEncoder3D
 from src.model.modeling.segresnet import SegResNetDS2
 
 
-def build_ahus_model(position_encoder_class: type[PositionEncoder3D]) -> AhusModel:
-    init_filters = 16
-    blocks_down: tuple = (1, 1, 2, 4)
-    blocks_up: tuple = (1, 1, 1, 1)
-    embed_dim = 128
+def build_ahus_model(position_encoder_class: type[PositionEncoder3D], large: bool = False) -> AhusModel:
+    # init_filters = 16 if not large else 8
+    init_filters = 8
+    blocks_down: tuple = (1, 1, 2, 4)  # if not large else (1, 1, 2, 4, 4)
+    blocks_up: tuple = (1, 1, 1, 1)  # if not large else (1, 1, 1, 1, 1)
+    # embed_dim = 128
+    embed_dim = 64
     num_heads = 4
     segresnet = SegResNetDS2(init_filters=init_filters, blocks_down=blocks_down)
 
@@ -19,7 +21,7 @@ def build_ahus_model(position_encoder_class: type[PositionEncoder3D]) -> AhusMod
 
     prompt_encoder = PromptEncoder3D(
         embed_dim=embed_dim,
-        prev_mask_downscaling_factor=8,
+        prev_mask_downscaling_factor=8 if not large else 16,
         init_filters=init_filters,
         position_encoder=position_encoder,
     )
@@ -31,7 +33,7 @@ def build_ahus_model(position_encoder_class: type[PositionEncoder3D]) -> AhusMod
         activation=nn.SiLU,
         init_filters=init_filters,
         blocks_up=blocks_up,
-        upsample_mode="deconv",
+        upsample_mode="nontrainable",
     )
     model = AhusModel(
         segresnet=segresnet,

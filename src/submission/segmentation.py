@@ -52,7 +52,6 @@ def add_to_logits(logits: ImageLogits, box: Box, box_margin: int = 1, increment=
     The box coordinates are inclusive, so we add 1 to the end coordinates but also ensure that they are within the bounds of the logits.
 
     logits: (D, H, W)
-    box_i: (2, 3) tensor with the coordinates of the bounding box
     """
     D, H, W = logits.shape
     box = box.clone().round().int()
@@ -60,6 +59,37 @@ def add_to_logits(logits: ImageLogits, box: Box, box_margin: int = 1, increment=
     z1, y1, x1 = torch.minimum(box[1] + 1, torch.tensor([D, H, W], device=box.device)).tolist()
 
     logits[z0:z1, y0:y1, x0:x1] += increment
+
+
+def add_to_logits_diameter(logits: ImageLogits, box: Box, box_margin: int = 1, increment=1.0) -> None:
+    p1 = torch.tensor(box[0])
+    p2 = torch.tensor(box[1])
+    X, Y, Z = logits.shape
+
+    # 1. Find center and radius
+    center = (p1 + p2) / 2
+    r = torch.norm(p2 - p1) / 2  # radius is half the diameter
+
+    # 2. Compute bounding box (clamp to volume)
+    x0 = torch.clamp((center[0] - r).floor().long(), 0, X - 1)
+    x1 = torch.clamp((center[0] + r).ceil().long(), 0, X - 1)
+    y0 = torch.clamp((center[1] - r).floor().long(), 0, Y - 1)
+    y1 = torch.clamp((center[1] + r).ceil().long(), 0, Y - 1)
+    z0 = torch.clamp((center[2] - r).floor().long(), 0, Z - 1)
+    z1 = torch.clamp((center[2] + r).ceil().long(), 0, Z - 1)
+
+    # 3. Generate coordinates only for the sub-box
+    xs = torch.arange(x0, x1 + 1).view(-1, 1, 1)
+    ys = torch.arange(y0, y1 + 1).view(1, -1, 1)
+    zs = torch.arange(z0, z1 + 1).view(1, 1, -1)
+
+    # 4. Compute distances within the sub-box
+    dist_sq = (xs - center[0]) ** 2 + (ys - center[1]) ** 2 + (zs - center[2]) ** 2
+    mask = dist_sq < r**2
+
+    # 5. Add to subregion
+    logits[x0 : x1 + 1, y0 : y1 + 1, z0 : z1 + 1][mask] += increment
+    return logits
 
 
 def thresholded_argmax_segmentation(
@@ -199,39 +229,44 @@ class OriginalSegmenter(Segmenter):
         prompt_embedding_attension_mask: Tensor | None,
     ) -> MulticlassSegmentation:
         assert image_logits is not None, "Image logits must be provided to OriginalSegmenter"
-        assert boxes is not None, "Boxes must be provided to OriginalSegmenter"
 
-        max_iter = 10
+        if boxes is None:
+            boxes = torch.zeros((image_logits.shape[0], 2, 3), device=image_logits.device)
+
+        max_iter = 3
         ensure_all_present = True
-        threshold_value = 0.5
-        print("image_logits dtype:", image_logits.dtype)
-        print("threshold_value type:", type(threshold_value))
-        print("autocast is enabled:", torch.is_autocast_enabled())
-        threshold_tensor = torch.full_like(image_logits[0:1], threshold_value)
-        n_instances = image_logits.shape[0]
 
-        not_all_instances_present = True
+        n_instances = image_logits.shape[0]
+        S = image_logits.shape[1:]
+
+        # Preallocate buffers
+        pred_long = torch.empty(S, dtype=torch.long)
+
         counter = 0
+        not_all_instances_present = True
         while not_all_instances_present and counter < max_iter:
-            pred_prob = torch.sigmoid(image_logits)
-            pred_concat = torch.cat((threshold_tensor, pred_prob), dim=0)
-            pred_long = pred_concat.argmax(dim=0)
+            # Fast argmax: compute class + max value in one pass
+            pred_values, pred_idx = torch.max(image_logits, dim=0, out=None)
+            pred_long.copy_(pred_idx.add(1))  # +1 to shift for background
+            pred_long[pred_values <= 0] = 0  # zero out below threshold
 
             if not ensure_all_present:
                 return pred_long
 
-            # For instances that are not yet present, we add a value to the logits in their bounding box
-            present_instances = torch.unique(pred_long)
-            for i, cls in enumerate(range(1, n_instances + 1)):  # for each instance
-                if cls not in present_instances:
-                    add_to_logits(image_logits[i], boxes[i], increment=2**counter)
+            # Fast bincount on flattened array
+            present_counts = torch.bincount(pred_long.view(-1), minlength=n_instances + 1)
+            present_mask = present_counts > 0
+
+            # Update missing instances
+            for idx in range(1, n_instances + 1):
+                if not present_mask[idx]:
+                    i = idx - 1
+                    add_to_logits_diameter(image_logits[i], boxes[i], increment=2**counter)
 
             counter += 1
+            not_all_instances_present = present_mask[1:].sum() != n_instances
 
-            not_all_instances_present = len(torch.unique(pred_long)) != n_instances + 1
-
-        # Is not unbounded
-        return pred_long  # type: ignore
+        return pred_long
 
     @classmethod
     def load(cls, path: Path | None, device: torch.device) -> Self:

@@ -129,6 +129,8 @@ from collections import OrderedDict
 from pathlib import Path
 
 import cc3d
+
+# import nibabel as nib
 import numpy as np
 import pandas as pd
 import torch
@@ -158,7 +160,7 @@ parser.add_argument(
     "--test_img_path",
     required=False,
     type=str,
-    default="data/CVPR-BiomedSegFM/3D_val_npz",
+    default="/home/stenheli/datasets/CVPR-BiomedSegFM/3D_val_npz/",
     help="testing data path",
 )
 parser.add_argument("-o", "--save_path", default="./demo_seg", type=str, help="segmentation output path")
@@ -167,7 +169,7 @@ parser.add_argument("--output_temp", default="./outputs", type=str, help="Path t
 parser.add_argument(
     "-val_gts",
     "--validation_gts_path",
-    default="data/CVPR-BiomedSegFM/3D_val_gt/3D_val_gt_interactive",
+    default="/home/stenheli/datasets/CVPR-BiomedSegFM/3D_val_gt/3D_val_gt_interactive/",
     required=False,
     type=str,
     help="path to validation set (or final test set) GT files",
@@ -180,11 +182,17 @@ parser.add_argument(
     help="Verbose output, e.g., print coordinates of generated clicks",
 )
 parser.add_argument(
-    "--model_type", type=str, required=False, help="Model type to use for prediction.", default="ahus_model_rope_mixed"
+    # "--model_type", type=str, required=False, help="Model type to use for prediction.", default="ahus_model_rope_mixed_large",
+    "--model_type",
+    type=str,
+    required=False,
+    help="Model type to use for prediction.",
+    default="ahus_model_rope_mixed",
 )
 parser.add_argument(
     "--model_checkpoint",
-    default="weights/rope_mixed_120_accum/model_latest.pth",
+    # default="/home/stenheli/SAM-MED3D/work_dir/4accum_coreset_nobox/model_latest_epoch_10.pth",
+    default="/home/stenheli/SAM-MED3D/work_dir/5jun_liere_muon_biglr/model_latest.pth",
     type=str,
     required=False,
     help="Path to the model weights.",
@@ -274,10 +282,13 @@ print("Start evaluating submissions...")
 np.random.seed(0)
 np.random.shuffle(test_cases)
 
-# Each test case is a single 3D image, with no channels
-# The values are integers, with each integer representing a different class (background, different foreground classes)
+validated_modalities = []
 for case in tqdm(test_cases):
-    print(f"\n##### {case} #####")
+    if case[:6].lower() not in validated_modalities:
+        print(f"\n##### {case} #####")
+        validated_modalities.append(case[:6].lower())
+    else:
+        continue
     real_running_time = 0
     dscs = []
     nsds = []
@@ -291,6 +302,10 @@ for case in tqdm(test_cases):
         gts = np.load(join(input_temp, case))["gts"]
     else:  # for validation or test images --> gts are in separate files to avoid label leakage during the course of the challenge
         gts = np.load(join(validation_gts_path, case))["gts"]
+    #     # save as nii gz in work_dir/inference
+    #     gts_nfti = nib.Nifti1Image(gts, affine=np.eye(4))
+    #     os.makedirs("work_dir/inference", exist_ok=True)
+    #     nib.save(gts_nfti, "work_dir/inference/gts.nii.gz")
 
     # foreground and background clicks for each class
     clicks_cls = [{"fg": [], "bg": []} for _ in np.unique(gts)[1:]]  # skip background class 0
@@ -305,6 +320,7 @@ for case in tqdm(test_cases):
                 continue
             if verbose:
                 print(f"Using Bounding Box for iteration {it}")
+                print("Bounding box: ", np.load(join(input_temp, case), allow_pickle=True)["boxes"])
         else:
             if verbose:
                 print(f"Using Clicks for iteration {it}")
@@ -415,7 +431,7 @@ for case in tqdm(test_cases):
 
         # This command is expected to take (D, H, W) images from one folder and write (D, H, W) segmentations (integer valued) to a different folder
         # BBoxes either need to be present in the npz file as the "boxes" key, or be in a separate file with prefix "boxes_"
-        cmd = f"python3 -m src.submission.ahus_predict --load_path {input_temp} --save_path {output_temp} --model_type {model_type} --model_checkpoint {model_checkpoint} --model_device {model_device} --segmenter_type {segmenter_type} --segmenter_checkpoint {segmenter_checkpoint} --segmenter_device {segmenter_device} --size_threshold {size_threshold} --n_clicks {n_clicks}"
+        cmd = f"python3 -m src.submission.ahus_predict --load_path {input_temp} --save_path {output_temp} --model_type {model_type} --model_checkpoint {model_checkpoint} --model_device {model_device} --segmenter_type {segmenter_type} --segmenter_checkpoint {segmenter_checkpoint} --segmenter_device {segmenter_device} --size_threshold {size_threshold} --n_clicks {n_clicks} --debug True"
 
         start_time = time.time()
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)

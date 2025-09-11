@@ -4,6 +4,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
+from scipy.spatial import ConvexHull
 from torch.utils.data import Dataset, WeightedRandomSampler
 
 
@@ -18,6 +19,7 @@ class NPZDataset(Dataset):
         load_n_first: Optional[int] = None,
         gt_dir: Optional[str] = None,
         label_dtype=torch.uint8,
+        validation: bool = False,
         **kwargs: Any,
     ) -> None:
         """
@@ -41,6 +43,7 @@ class NPZDataset(Dataset):
         self.data_suffix: str = data_suffix
         self.label_dtype = label_dtype
         self.kwargs: Dict[str, Any] = kwargs
+        self.validation: bool = validation
 
         self.file_paths, self.modalities = self._gather_data()
         if load_n_first is not None:
@@ -55,8 +58,6 @@ class NPZDataset(Dataset):
         for root, _, files in os.walk(self.base_dir):
             for file in files:
                 if not file.endswith(self.data_suffix):
-                    continue
-                if "limb-Leg" in file or "cremi" in file:
                     continue
                 img_path = os.path.join(root, file)
 
@@ -85,39 +86,59 @@ class NPZDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         img_path, gt_path = self.file_paths[idx]
-        img_npz = np.load(img_path, mmap_mode="r")
 
-        if gt_path:
-            gt_npz = np.load(gt_path, mmap_mode="r")
-            imgs = torch.tensor(img_npz["imgs"])
-            gts = torch.tensor(gt_npz["gts"])
-            spacing = torch.tensor(gt_npz["spacing"])
-        else:
-            imgs = torch.tensor(img_npz["imgs"])
-            gts = torch.tensor(img_npz["gts"])
-            spacing = torch.tensor(img_npz["spacing"])
+        try:
+            img_npz = np.load(img_path, mmap_mode="r")
+            if gt_path:
+                gt_npz = np.load(gt_path, mmap_mode="r")
+                imgs = torch.tensor(img_npz["imgs"])
+                gts = torch.tensor(gt_npz["gts"])
+                spacing = torch.tensor(gt_npz["spacing"])
+            else:
+                imgs = torch.tensor(img_npz["imgs"])
+                gts = torch.tensor(img_npz["gts"])
+                spacing = torch.tensor(img_npz["spacing"])
+        except Exception as e:
+            print(f"WARNING: Exception while loading {img_path}, skipping this file. Error {e}")
+            return self.__getitem__(np.random.randint(len(self)))
 
         unique_labels = np.unique(gts.numpy().astype(np.uint16))
         unique_labels = np.sort(unique_labels)[1:]  # skip background
         if len(unique_labels) == 0:
-            print("WARNING: No positive elements in labels file, skipping this file.")
+            print(f"WARNING: No labels found in {img_path}, skipping this file.")
+            # print("WARNING: No positive elements in labels file, skipping this file.")
             return self.__getitem__(np.random.randint(len(self)))
-
-        selected_label = np.random.choice(unique_labels)
-        labeldata = gts == selected_label
-        stacked_data = torch.stack([labeldata, imgs], dim=0)
+        try:
+            if self.validation:
+                selected_label = unique_labels[idx % len(unique_labels)]
+            else:
+                selected_label = np.random.choice(unique_labels)
+            labeldata = gts == selected_label
+            stacked_data = torch.stack([labeldata, imgs], dim=0)
+        except Exception as e:
+            print(f"WARNING: Error {e} while processing {img_path}, skipping this file.")
+            return self.__getitem__(np.random.randint(len(self)))
 
         z_indices, y_indices, x_indices = torch.where(labeldata)
         if z_indices.numel() == 0:
             print("WARNING: No positive elements in selected label, skipping this file.")
             return self.__getitem__(np.random.randint(len(self)))
 
+        rel_path = os.path.relpath(img_path, self.base_dir)
+        if "microscopy" in rel_path.lower():
+            return self.__getitem__(np.random.randint(len(self)))
+
         z_min, z_max = z_indices.min().item(), z_indices.max().item()
         y_min, y_max = y_indices.min().item(), y_indices.max().item()
         x_min, x_max = x_indices.min().item(), x_indices.max().item()
 
-        min_offset = 1
-        max_offset = 64
+        # if np.random.rand() < 0.5:
+        if self.validation:
+            min_offset = 32
+            max_offset = 33
+        else:
+            min_offset = 1
+            max_offset = 64
         z_min = max(0, z_min - np.random.randint(min_offset, max_offset))
         z_max = min(gts.shape[0] - 1, z_max + np.random.randint(min_offset, max_offset))
         y_min = max(0, y_min - np.random.randint(min_offset, max_offset))
@@ -128,9 +149,9 @@ class NPZDataset(Dataset):
         stacked_data = stacked_data[:, z_min : z_max + 1, y_min : y_max + 1, x_min : x_max + 1]
 
         while (stacked_data.shape[1] * stacked_data.shape[2] * stacked_data.shape[3]) > self.size_threshold:
-            min_dim_index = int(torch.argmin(torch.tensor(stacked_data.shape[1:])))
+            max_dim_index = int(torch.argmax(torch.tensor(stacked_data.shape[1:])))
             kernel_size = [1, 1, 1]
-            kernel_size[min_dim_index] = 2
+            kernel_size[max_dim_index] = 2
             stacked_data = (
                 F.max_pool3d(stacked_data.unsqueeze(0).float(), kernel_size=kernel_size).squeeze(0).to(torch.uint8)
             )
@@ -152,14 +173,86 @@ class NPZDataset(Dataset):
 
         # imgdata = imgdata.float()
 
-        rel_path = os.path.relpath(img_path, self.base_dir)
+        def use_box():
+            # if "brats" in rel_path.lower() or "vessel" in rel_path.lower():
+            #     return False
+            return np.random.rand() < 1.0
+
         return {
             "image": imgdata,
             "label": labeldata,
-            "boxes": self.get_bboxes_3D(labeldata),
+            "boxes": self.get_diameter_points_fast(labeldata),
+            # "boxes":self.get_bboxes_3D(labeldata) if use_box() else torch.zeros((2, 3)),
+            # "boxes": self.expanded_mask3D_to_bbox(labeldata[0], rel_path) if use_box() else torch.zeros((6, 3)),
             "spacing": spacing,
             "rel_path": rel_path,
         }
+
+    def get_diameter_points_fast(self, gt3D: torch.Tensor) -> torch.Tensor:
+        # 1) pick the slice with largest area
+        lesion = gt3D[0]  # [D,H,W]
+        areas = lesion.sum(dim=(1, 2))  # [D]
+        k = torch.argmax(areas).item()
+        mask2d = lesion[k]  # [H,W]
+
+        # 2) extract nonzero pixel coordinates
+        pts = torch.nonzero(mask2d, as_tuple=False)  # [N,2]
+        N = pts.shape[0]
+        if N < 2:
+            return torch.zeros((2, 3), dtype=torch.int64)
+
+        # 3) convex hull on CPU numpy
+        pts_np = pts.cpu().numpy()
+        try:
+            hull = ConvexHull(pts_np)
+        except Exception as e:
+            print(f"WARNING: ConvexHull computation failed for slice {k} with error {e}, returning dummy points.")
+            return torch.zeros((2, 3), dtype=torch.int64)
+        hull_pts = pts_np[hull.vertices]  # [h,2], h ≪ N
+
+        # 4) pairwise squared‑distance on hull points
+        diffs = hull_pts[:, None, :] - hull_pts[None, :, :]  # [h,h,2]
+        d2 = (diffs**2).sum(-1)  # [h,h]
+        idx_flat = np.argmax(d2)
+        i, j = divmod(idx_flat, d2.shape[1])
+
+        # 5) build 3D points
+        z = torch.tensor([k], dtype=torch.int64)
+        p1 = torch.cat([z, torch.from_numpy(hull_pts[i]).to(torch.int64)])
+        p2 = torch.cat([z, torch.from_numpy(hull_pts[j]).to(torch.int64)])
+        return torch.stack([p1, p2], dim=0)  # [2,3]
+
+    def get_diameter_points(self, gt3D: torch.Tensor) -> torch.Tensor:
+        lesion_array = gt3D[0]  # shape: [D, H, W]
+
+        # Compute area per slice
+        area_per_slice = lesion_array.sum(dim=(1, 2))  # shape: [D]
+
+        # Find the key slice
+        key_slice_id = torch.argmax(area_per_slice)
+        largest_2D_slice = lesion_array[key_slice_id]  # shape: [H, W]
+
+        # Get non-zero pixel coordinates
+        points_2d = torch.nonzero(largest_2D_slice, as_tuple=False)  # shape: [N, 2]
+
+        if points_2d.size(0) < 2:
+            print(f"WARNING: Not enough points in slice {key_slice_id}, returning dummy points.")
+            return torch.zeros((2, 3), dtype=torch.int64)  # handle edge case with dummy 3D points
+
+        # Compute pairwise distances
+        diffs = points_2d[:, None, :] - points_2d[None, :, :]  # shape: [N, N, 2]
+        dist_matrix = torch.norm(diffs.float(), dim=2)  # shape: [N, N]
+
+        # Get indices of the most distant points
+        max_diam_idx = torch.argmax(dist_matrix)
+        idx1, idx2 = divmod(max_diam_idx.item(), dist_matrix.size(1))
+
+        # Add z-dimension to each point
+        z = key_slice_id.item()
+        p1 = torch.cat([torch.tensor([z]), points_2d[idx1]])  # [z, y, x]
+        p2 = torch.cat([torch.tensor([z]), points_2d[idx2]])  # [z, y, x]
+
+        return torch.stack((p1, p2))  # shape: [2, 3]
 
     def get_bbox_2D(self, gt2D: np.ndarray) -> np.ndarray:
         # Compute bounding box for 2D segmentation
@@ -199,6 +292,78 @@ class NPZDataset(Dataset):
         corners_tensor[1, 2] = x_max
         return corners_tensor
 
+    def mask2D_to_bbox(self, gt2D, file):
+        try:
+            y_indices, x_indices = np.where(gt2D > 0)
+            x_min, x_max = np.min(x_indices), np.max(x_indices)
+            y_min, y_max = np.min(y_indices), np.max(y_indices)
+            # add perturbation to bounding box coordinates
+            H, W = gt2D.shape
+            bbox_shift = np.random.randint(0, 6, 1)[0]
+            scale_y, scale_x = gt2D.shape
+            bbox_shift_x = int(bbox_shift * scale_x / 256)
+            bbox_shift_y = int(bbox_shift * scale_y / 256)
+            # print(f'{bbox_shift_x=} {bbox_shift_y=} with orig {bbox_shift=}')
+            x_min = max(0, x_min - bbox_shift_x)
+            x_max = min(W - 1, x_max + bbox_shift_x)
+            y_min = max(0, y_min - bbox_shift_y)
+            y_max = min(H - 1, y_max + bbox_shift_y)
+            boxes = np.array([x_min, y_min, x_max, y_max])
+            return boxes
+        except Exception as e:
+            raise Exception(f"error {e} with file {file}")
+
+    def mask3D_to_bbox(self, gt3D, file):
+        b_dict = {}
+        z_indices, y_indices, x_indices = np.where(gt3D > 0)
+        z_min, z_max = np.min(z_indices), np.max(z_indices)
+        z_indices = np.unique(z_indices)
+        # middle of z_indices
+        z_middle = z_indices[len(z_indices) // 2]
+
+        D, H, W = gt3D.shape
+        b_dict["z_min"] = z_min
+        b_dict["z_max"] = z_max
+        b_dict["z_mid"] = z_middle
+
+        gt_mid = gt3D[z_middle]
+
+        box_2d = self.mask2D_to_bbox(gt_mid, file)
+        x_min, y_min, x_max, y_max = box_2d
+        b_dict["z_mid_x_min"] = x_min
+        b_dict["z_mid_y_min"] = y_min
+        b_dict["z_mid_x_max"] = x_max
+        b_dict["z_mid_y_max"] = y_max
+
+        assert z_min == max(0, z_min)
+        assert z_max == min(D - 1, z_max)
+        return b_dict
+
+    def expanded_mask3D_to_bbox(self, gt3D, file):
+        b_dict = self.mask3D_to_bbox(gt3D, file)
+        corners_tensor = torch.zeros((6, 3), dtype=torch.float32).to(gt3D.device)
+        corners_tensor[0, 0] = b_dict["z_mid"]
+        corners_tensor[0, 1] = b_dict["z_mid_y_min"]
+        corners_tensor[0, 2] = b_dict["z_mid_x_min"]
+        corners_tensor[1, 0] = b_dict["z_mid"]
+        corners_tensor[1, 1] = b_dict["z_mid_y_max"]
+        corners_tensor[1, 2] = b_dict["z_mid_x_max"]
+        corners_tensor[2, 0] = b_dict["z_mid"]
+        corners_tensor[2, 1] = b_dict["z_mid_y_min"]
+        corners_tensor[2, 2] = b_dict["z_mid_x_max"]
+        corners_tensor[3, 0] = b_dict["z_mid"]
+        corners_tensor[3, 1] = b_dict["z_mid_y_max"]
+        corners_tensor[3, 2] = b_dict["z_mid_x_min"]
+        x_mid = int((b_dict["z_mid_x_min"] + b_dict["z_mid_x_max"]) / 2)
+        y_mid = int((b_dict["z_mid_y_min"] + b_dict["z_mid_y_max"]) / 2)
+        corners_tensor[4, 0] = b_dict["z_min"]
+        corners_tensor[4, 1] = y_mid
+        corners_tensor[4, 2] = x_mid
+        corners_tensor[5, 0] = b_dict["z_max"]
+        corners_tensor[5, 1] = y_mid
+        corners_tensor[5, 2] = x_mid
+        return corners_tensor
+
 
 def create_weighted_sampler(dataset: NPZDataset) -> WeightedRandomSampler:
     """Creates a WeightedRandomSampler so that each modality (first subfolder) is equally likely to be sampled."""
@@ -229,5 +394,8 @@ def create_weighted_dataset_folder_sampler(dataset: NPZDataset, epoch_size: int 
 
     num_dataset_folders = len(dataset_folder_counts)
     weights = [1.0 / (dataset_folder_counts[sub] * num_dataset_folders) for sub in dataset_folders]
-    sampler = WeightedRandomSampler(weights, num_samples=epoch_size, replacement=True)
+    if epoch_size is not None:
+        sampler = WeightedRandomSampler(weights, num_samples=epoch_size, replacement=True)
+    else:
+        sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
     return sampler

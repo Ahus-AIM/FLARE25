@@ -42,8 +42,8 @@ class MultiClickEmbedding(nn.Module):
         point_embedding = torch.zeros((points.shape[0], points.shape[1], self.embed_dim), device=points.device)
         for i in range(self.num_points):
             point_embedding[labels == i] += self.point_embeddings[i].weight
-        if labels.shape[1] > 0:
-            point_embedding[:, -1] += self.last_click_embedding.weight
+        # if labels.shape[1] > 0:
+        #     point_embedding[:, -1] += self.last_click_embedding.weight
         return point_embedding
 
 
@@ -65,7 +65,7 @@ class BoxEmbedding(nn.Module):
         boxes = boxes + 0.5  # Shift to center of pixel
         corner_embedding = torch.zeros((boxes.shape[0], boxes.shape[1], self.embed_dim), device=boxes.device)
         corner_embedding[:, 0, :] += self.box_embedding[0].weight
-        corner_embedding[:, 1, :] += self.box_embedding[1].weight
+        corner_embedding[:, 1, :] += self.box_embedding[0].weight
         return corner_embedding
 
 
