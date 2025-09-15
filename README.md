@@ -43,7 +43,7 @@ python3 -m pip install --upgrade pip && python3 -m pip install -r requirements.t
 
 The [FLARE task 1 PancancerRECIST to 3D](https://huggingface.co/datasets/FLARE-MedFM/FLARE-Task1-PancancerRECIST-to-3D) dataset is used exclusively for model training and validation.
 
-1. Download the downloaded dataset:
+1. Download the dataset:
     ```
     python3 download_flare25_task1_subtask2.py
     ```
