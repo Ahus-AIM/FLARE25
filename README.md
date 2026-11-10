@@ -22,7 +22,7 @@ A common region of interest encloses the RECIST annotations. Image features are 
 
 ### Segmentation accuracy
 
-| Evaluation cohort | DSC (%) | NSD (%) |
+| Evaluation set | DSC (%) | NSD (%) |
 | :--- | :---: | :---: |
 | Official hidden test | 60.7 | 63.6 |
 | Public validation | 69.7 ± 16.8 | 61.8 ± 19.1 |
@@ -60,7 +60,7 @@ The benchmark ran on the development CPU listed below, in CPU-only Docker contai
 
 The adjustment was triggered in 7/49 public validation cases (14.3%) and 8/84 lesions (9.5%). Six initially missing lesions obtained nonempty predictions; two remained absent.
 
-| Public validation cohort | DSC without adjustment (%) | DSC with adjustment (%) | NSD without adjustment (%) | NSD with adjustment (%) |
+| Public validation set | DSC without adjustment (%) | DSC with adjustment (%) | NSD without adjustment (%) | NSD with adjustment (%) |
 | :--- | :---: | :---: | :---: | :---: |
 | Entire set | 67.8 | 69.7 | 59.8 | 61.8 |
 | Affected cases | 37.5 | 50.5 | 33.0 | 47.3 |
