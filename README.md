@@ -8,7 +8,7 @@ Lite ENSAM converts RECIST diameter annotations into 3D tumor segmentations. The
 
 ## Method
 
-Lite ENSAM retains ENSAM's encoder–decoder and prompt-conditioned attention structure, with reduced network dimensions and an inference voxel budget selected for the competition's resource constraints. The two RECIST endpoints share a learned token embedding; their coordinates enter attention through mixed rotary positional encoding, a block-diagonal form of LieRE. The corresponding model configuration is `ahus_model_rope_mixed`.
+Lite ENSAM retains ENSAM's encoder–decoder and prompt-conditioned attention structure, with reduced network dimensions and an inference voxel budget selected for the competition's resource constraints. The two RECIST endpoints share a learned token embedding; their coordinates are encoded through Lie Rotational Positional Encoding (LieRE). The corresponding model configuration is `ahus_model_rope_mixed`.
 
 A common region of interest encloses the RECIST annotations. Image features are computed once and shared across lesions, and predicted logits are restored to the original CT grid. CPU post-processing optimizations reduce runtime and memory usage. Lesion-presence adjustment increases logits around RECIST annotations for initially missing lesions, with at most three prediction passes.
 
