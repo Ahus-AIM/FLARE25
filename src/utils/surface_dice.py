@@ -487,9 +487,13 @@ def compute_dice_coefficient(mask_gt, mask_pred):
     Returns:
       the dice coeffcient as float. If both masks are empty, the result is NaN
     """
+    if mask_gt.dtype != np.bool_ or mask_pred.dtype != np.bool_:
+        raise TypeError("Dice requires boolean masks, not integer lesion labels")
+    if mask_gt.shape != mask_pred.shape:
+        raise ValueError("Ground truth and prediction must have matching shapes")
     volume_sum = mask_gt.sum() + mask_pred.sum()
     if volume_sum == 0:
-        return np.NaN
+        return np.nan
     volume_intersect = (mask_gt & mask_pred).sum()
     return 2 * volume_intersect / volume_sum
 
@@ -499,7 +503,7 @@ def compute_dice_coefficient(mask_gt, mask_pred):
 
 def compute_multi_class_dsc(gt: Integer[np.ndarray, "D H W"], seg: Integer[np.ndarray, "D H W"]) -> np.floating:
     dsc = []
-    for i in np.unique(gt)[1:]:  # skip bg
+    for i in np.unique(gt[gt > 0]):
         gt_i = gt == i
         seg_i = seg == i
         dsc.append(compute_dice_coefficient(gt_i, seg_i))
@@ -510,7 +514,7 @@ def compute_multi_class_nsd(
     gt: Integer[np.ndarray, "D H W"], seg: Integer[np.ndarray, "D H W"], spacing, tolerance=2.0
 ) -> np.floating:
     nsd = []
-    for i in np.unique(gt)[1:]:  # skip bg
+    for i in np.unique(gt[gt > 0]):
         gt_i = gt == i
         seg_i = seg == i
         surface_distance = compute_surface_distances(gt_i, seg_i, spacing_mm=spacing)

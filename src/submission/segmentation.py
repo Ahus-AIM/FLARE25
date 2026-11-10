@@ -6,9 +6,8 @@ from jaxtyping import Integer
 from tensordict import TensorDict
 from torch import Tensor
 
-from src.custom_types import BatchedImageLogits, Box, Boxes, ImageLogits, PointCoords
+from src.custom_types import BatchedImageLogits, Box, Boxes, ImageLogits, MulticlassSegmentation, PointCoords
 from src.rl.agents.attention_based.ppo import AttentionPPOThresholdAgent
-from src.rl.mdp_env import MulticlassSegmentation
 from src.rl.utils import image_logits_to_multiclass_segmentation
 
 
