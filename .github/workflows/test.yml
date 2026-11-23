@@ -5,15 +5,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
+    - name: Set up Python
+      uses: actions/setup-python@v5
       with:
         python-version: '3.12'
     - name: Fix permissions for Git
       run: |
         sudo chown -R $(whoami) .git/
         sudo chmod -R u+rwX .git/
+    - name: Create isolated Python environment
+      run: |
+        # Exclude the runner's preinstalled packages and pytest plugin metadata.
+        python -m venv "$RUNNER_TEMP/pytest-venv"
+        echo "$RUNNER_TEMP/pytest-venv/bin" >> "$GITHUB_PATH"
     - name: Install dependencies
       run: |
-        python3.12 -m pip install --upgrade pip
-        python3.12 -m pip install --no-cache-dir -r requirements.txt
+        python -m pip install --upgrade pip
+        python -m pip install --no-cache-dir -r requirements.txt
     - name: Run pytests
-      run: timeout 3600 python3.12 -m pytest -vv --durations=10
+      run: timeout 3600 python -m pytest -vv --durations=10
